@@ -263,28 +263,44 @@ export default function PersonnelList({
                   className={`px-2 py-1 rounded-md flex items-center gap-1.5 font-medium ${
                     p.dutyStatus === "OFF DUTY"
                       ? "bg-slate-800/60 text-slate-400 border border-slate-700/40"
-                      : p.locationStatus === "TRACKING ACTIVE"
-                        ? "bg-sky-950/40 text-sky-300 border border-sky-900/40"
-                        : p.locationStatus === "LOCATION UNAVAILABLE"
-                          ? "bg-amber-950/40 text-amber-300 border border-amber-900/40"
-                          : "bg-slate-800/60 text-slate-400 border border-slate-700/40"
+                      : p.trackingStatus === "GPS ACTIVE"
+                        ? "bg-emerald-950/60 text-emerald-300 border border-emerald-800/50"
+                        : p.trackingStatus === "NETWORK LOCATION"
+                          ? "bg-cyan-950/60 text-cyan-300 border border-cyan-800/50"
+                          : p.trackingStatus === "LOCATION OFF" || p.trackingStatus === "PERMISSION DENIED"
+                            ? "bg-rose-950/60 text-rose-300 border border-rose-800/50"
+                            : p.trackingStatus === "GPS UNAVAILABLE" || p.trackingStatus === "INTERNET DISCONNECTED" || p.trackingStatus === "TRACKING INTERRUPTED"
+                              ? "bg-amber-950/60 text-amber-300 border border-amber-800/50"
+                              : p.locationStatus === "TRACKING ACTIVE"
+                                ? "bg-sky-950/40 text-sky-300 border border-sky-900/40"
+                                : "bg-slate-800/60 text-slate-400 border border-slate-700/40"
                   }`}
                 >
                   <span
                     className={`w-1.5 h-1.5 rounded-full ${
                       p.dutyStatus === "OFF DUTY"
                         ? "bg-slate-500"
-                        : p.locationStatus === "TRACKING ACTIVE"
-                          ? "bg-sky-400"
-                          : p.locationStatus === "LOCATION UNAVAILABLE"
-                            ? "bg-amber-400"
-                            : "bg-slate-500"
+                        : p.trackingStatus === "GPS ACTIVE"
+                          ? "bg-emerald-400"
+                          : p.trackingStatus === "NETWORK LOCATION"
+                            ? "bg-cyan-400"
+                            : p.trackingStatus === "LOCATION OFF" || p.trackingStatus === "PERMISSION DENIED"
+                              ? "bg-rose-400"
+                              : p.trackingStatus === "GPS UNAVAILABLE" || p.trackingStatus === "INTERNET DISCONNECTED" || p.trackingStatus === "TRACKING INTERRUPTED"
+                                ? "bg-amber-400"
+                                : "bg-slate-500"
                     }`}
                   />
                   <span className="truncate flex items-center gap-1">
-                    <span>{p.dutyStatus === "OFF DUTY" ? "OFF DUTY" : p.locationStatus}</span>
-                    {p.location?.accuracy != null && p.locationStatus === "TRACKING ACTIVE" && (
-                      <span className="text-[10px] text-sky-400 font-mono">±{Math.round(p.location.accuracy)}m</span>
+                    <span>
+                      {p.dutyStatus === "OFF DUTY"
+                        ? "OFF DUTY"
+                        : p.trackingStatus || p.locationStatus}
+                    </span>
+                    {p.location?.accuracy != null && (p.trackingStatus === "GPS ACTIVE" || p.trackingStatus === "NETWORK LOCATION" || p.locationStatus === "TRACKING ACTIVE") && (
+                      <span className={`text-[10px] font-mono ${p.trackingStatus === "NETWORK LOCATION" ? "text-cyan-400" : "text-emerald-400"}`}>
+                        ±{Math.round(p.location.accuracy)}m
+                      </span>
                     )}
                   </span>
                 </div>

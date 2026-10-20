@@ -88,6 +88,12 @@ model Device {
   latestSource       String?
   latestLocationTime DateTime?
 
+  locationEnabled    Boolean?
+  permissionState    String?
+  isTrackingRunning  Boolean?
+  gpsAvailable       Boolean?
+  lastGpsFixTime     DateTime?
+
   personnel Personnel @relation(fields: [personnelId], references: [id])
   dutySessions DutySession[]
   locations Location[]

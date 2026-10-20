@@ -238,17 +238,32 @@ export default function PersonnelDetail({ personnel, onClose, className = "" }: 
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Tracking Status</span>
               <span
-                className={`font-semibold ${
-                  personnel.locationStatus === "TRACKING ACTIVE"
-                    ? "text-emerald-400"
-                    : personnel.locationStatus === "LOCATION UNAVAILABLE"
-                      ? "text-amber-400"
-                      : "text-slate-400"
+                className={`font-bold px-2 py-0.5 rounded text-[11px] border ${
+                  personnel.trackingStatus === "GPS ACTIVE"
+                    ? "bg-emerald-950/80 text-emerald-300 border-emerald-800/60"
+                    : personnel.trackingStatus === "NETWORK LOCATION"
+                      ? "bg-cyan-950/80 text-cyan-300 border-cyan-800/60"
+                      : personnel.trackingStatus === "LOCATION OFF" || personnel.trackingStatus === "PERMISSION DENIED"
+                        ? "bg-rose-950/80 text-rose-300 border-rose-800/60"
+                        : personnel.trackingStatus === "GPS UNAVAILABLE" || personnel.trackingStatus === "INTERNET DISCONNECTED" || personnel.trackingStatus === "TRACKING INTERRUPTED"
+                          ? "bg-amber-950/80 text-amber-300 border-amber-800/60"
+                          : "bg-slate-900 text-slate-400 border-slate-800"
                 }`}
               >
-                {personnel.locationStatus}
+                {personnel.trackingStatus || personnel.locationStatus}
               </span>
             </div>
+
+            {personnel.statusReason && (
+              <div className="text-[11px] text-slate-400 bg-slate-900/80 border border-slate-800/60 px-2.5 py-1.5 rounded-lg">
+                <span className="text-slate-300 font-medium">{personnel.statusReason}</span>
+                {personnel.confirmedByDevice && (
+                  <span className="ml-1.5 text-[9px] uppercase tracking-wider text-emerald-400 font-bold font-mono">
+                    • Verified Device Report
+                  </span>
+                )}
+              </div>
+            )}
 
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Network Link</span>
@@ -275,8 +290,21 @@ export default function PersonnelDetail({ personnel, onClose, className = "" }: 
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Accuracy Radius</span>
-                  <span className="text-slate-300 font-medium">±{personnel.location.accuracy.toFixed(1)} m</span>
+                  <span className="text-slate-400">Provider & Accuracy</span>
+                  <div className="flex items-center gap-1.5">
+                    {personnel.location.source && (
+                      <span
+                        className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                          personnel.location.source === "NETWORK"
+                            ? "bg-cyan-950/90 text-cyan-300 border-cyan-800/70"
+                            : "bg-emerald-950/90 text-emerald-300 border-emerald-800/70"
+                        }`}
+                      >
+                        {personnel.location.source}
+                      </span>
+                    )}
+                    <span className="text-slate-300 font-medium">±{personnel.location.accuracy.toFixed(1)} m</span>
+                  </div>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-slate-400">Recorded At</span>
@@ -289,8 +317,26 @@ export default function PersonnelDetail({ personnel, onClose, className = "" }: 
               </div>
             )}
 
+            {personnel.lastGpsFixTime && (
+              <div className="flex justify-between items-center border-t border-slate-800/60 pt-2 mt-2">
+                <span className="text-slate-400">Last GPS Fix</span>
+                <span className="text-slate-300 font-mono text-[11px]">
+                  {formatIST(personnel.lastGpsFixTime, true)}
+                </span>
+              </div>
+            )}
+
+            {personnel.lastHeartbeat && (
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Last Heartbeat</span>
+                <span className="text-slate-300 font-mono text-[11px]">
+                  {formatIST(personnel.lastHeartbeat, true)}
+                </span>
+              </div>
+            )}
+
             <div className="flex justify-between items-center border-t border-slate-800/60 pt-2 mt-2">
-              <span className="text-slate-400">Last Telemetry Contact</span>
+              <span className="text-slate-400">Last Contact</span>
               <span className="text-slate-300">
                 {personnel.lastSeen ? formatIST(personnel.lastSeen, true) : "Never"}
               </span>

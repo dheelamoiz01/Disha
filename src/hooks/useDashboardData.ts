@@ -6,20 +6,25 @@ export type DashboardPersonnel = {
   personnelCode: string;
   designation: string;
   unit: string;
-  dutyStatus: "ON DUTY" | "OFF DUTY";
-  locationStatus: "TRACKING ACTIVE" | "LOCATION UNAVAILABLE" | "STALE" | "NO DATA";
-  deviceStatus: "ONLINE" | "STALE" | "OFFLINE";
-  networkStatus: "ONLINE" | "OFFLINE" | "UNKNOWN";
-  sosStatus: "SOS ACTIVE" | "NONE";
+  dutyStatus: "ON DUTY" | "OFF DUTY" | string;
+  locationStatus: "GPS ACTIVE" | "NETWORK LOCATION" | "TRACKING ACTIVE" | "LOCATION UNAVAILABLE" | "LOCATION OFF" | "PERMISSION DENIED" | "STALE" | "STALE / OFFLINE" | "OFF DUTY" | "NO DATA" | string;
+  trackingStatus?: "GPS ACTIVE" | "NETWORK LOCATION" | "LOCATION OFF" | "PERMISSION DENIED" | "GPS UNAVAILABLE" | "INTERNET DISCONNECTED" | "TRACKING INTERRUPTED" | "STALE / OFFLINE" | "OUTSIDE DUTY HOURS" | string;
+  statusReason?: string;
+  confirmedByDevice?: boolean;
+  deviceStatus: "ONLINE" | "STALE" | "OFFLINE" | string;
+  networkStatus: "ONLINE" | "OFFLINE" | "UNKNOWN" | string;
+  sosStatus: "SOS ACTIVE" | "NONE" | string;
   lastSeen: string | null;
   lastHeartbeat: string | null;
+  lastGpsFixTime?: string | null;
+  lastKnownLocationAgeSeconds?: number | null;
   location: {
     latitude: number;
     longitude: number;
     accuracy: number;
     accuracyRating?: "OPTIMAL" | "MODERATE" | "COARSE" | "HIGH" | "MEDIUM" | "LOW" | null;
     accuracyAgeSeconds?: number;
-    source?: string;
+    source?: "GPS" | "NETWORK" | "FUSED" | string;
     recordedAt: string;
   } | null;
   device: {

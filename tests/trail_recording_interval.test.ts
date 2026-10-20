@@ -7,6 +7,7 @@ import { DeviceStatus, UserStatus } from "../generated/prisma/enums";
 import { ingestSingleLocation } from "../src/services/telemetry/ingestion_service";
 import { getStaffLocationTrail } from "../src/services/control-room/trail_service";
 import { getDashboardOverview } from "../src/services/control-room/dashboard_service";
+import { setMockDutyTime } from "../src/lib/utils/duty_window";
 
 test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   let user: any;
@@ -17,6 +18,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   process.env.TRAIL_RECORDING_INTERVAL_MS = "270000";
 
   const BASE_TIME = new Date("2026-10-20T04:00:00.000Z"); // 09:30 IST
+  setMockDutyTime(BASE_TIME);
 
   await t.test("Setup fixtures", async () => {
     user = await prisma.user.create({
@@ -57,6 +59,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
 
   await t.test("1. Initial duty fix (t = 0m) is persisted immediately as anchor point", async () => {
     const t0 = new Date(BASE_TIME.getTime());
+    setMockDutyTime(t0);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8333,
@@ -79,6 +82,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   await t.test("2. Rapid updates within interval (t = 1m and t = 3m) are deduplicated, not persisted", async () => {
     // Attempt at t = +1 minute (60s < 270s)
     const t1 = new Date(BASE_TIME.getTime() + 60 * 1000);
+    setMockDutyTime(t1);
     const res1 = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8340,
@@ -93,6 +97,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
 
     // Attempt at t = +3 minutes (180s < 270s)
     const t3 = new Date(BASE_TIME.getTime() + 180 * 1000);
+    setMockDutyTime(t3);
     const res2 = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8345,
@@ -112,6 +117,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
 
   await t.test("3. Scheduled fix at t = 5m (300s >= 270s) is accepted and persisted as Point 2", async () => {
     const t5 = new Date(BASE_TIME.getTime() + 300 * 1000); // exactly 5 minutes later
+    setMockDutyTime(t5);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8360,
@@ -133,6 +139,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   await t.test("4. Temporary signal loss (no fix at t=10m); next valid fix at t=15m records honest gap", async () => {
     // 10 minutes elapsed since Point 2 (t5)
     const t15 = new Date(BASE_TIME.getTime() + 15 * 60 * 1000);
+    setMockDutyTime(t15);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8400,
@@ -164,6 +171,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
 
     // 30 seconds after t15 (inside the 5-minute window)
     const t15_30s = new Date(BASE_TIME.getTime() + 15 * 60 * 1000 + 30 * 1000);
+    setMockDutyTime(t15_30s);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8405,
@@ -215,6 +223,7 @@ test("5-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   });
 
   await t.test("Cleanup test fixtures", async () => {
+    setMockDutyTime(null);
     await prisma.location.deleteMany({ where: { personnelId: personnel.id } });
     await prisma.sOSEvent.deleteMany({ where: { personnelId: personnel.id } });
     await prisma.dutySession.deleteMany({ where: { personnelId: personnel.id } });

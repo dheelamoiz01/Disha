@@ -302,11 +302,13 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
                 "fill-color":
                   selected?.sosStatus === "SOS ACTIVE"
                     ? "#e11d48"
-                    : (selected?.location?.accuracyRating === "OPTIMAL" || (selected?.location?.accuracy ?? 99) <= 10)
-                      ? "#10b981"
-                      : (selected?.location?.accuracyRating === "MODERATE" || (selected?.location?.accuracy ?? 99) <= 30)
-                        ? "#0284c7"
-                        : "#f59e0b",
+                    : (selected?.location?.source === "NETWORK" || selected?.trackingStatus === "NETWORK LOCATION")
+                      ? "#06b6d4"
+                      : (selected?.location?.accuracyRating === "OPTIMAL" || (selected?.location?.accuracy ?? 99) <= 10)
+                        ? "#10b981"
+                        : (selected?.location?.accuracyRating === "MODERATE" || (selected?.location?.accuracy ?? 99) <= 30)
+                          ? "#0284c7"
+                          : "#f59e0b",
                 "fill-opacity": 0.18,
               }}
             />
@@ -317,15 +319,17 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
                 "line-color":
                   selected?.sosStatus === "SOS ACTIVE"
                     ? "#f43f5e"
-                    : (selected?.location?.accuracyRating === "OPTIMAL" || (selected?.location?.accuracy ?? 99) <= 10)
-                      ? "#059669"
-                      : (selected?.location?.accuracyRating === "MODERATE" || (selected?.location?.accuracy ?? 99) <= 30)
-                        ? "#0284c7"
-                        : "#d97706",
+                    : (selected?.location?.source === "NETWORK" || selected?.trackingStatus === "NETWORK LOCATION")
+                      ? "#0891b2"
+                      : (selected?.location?.accuracyRating === "OPTIMAL" || (selected?.location?.accuracy ?? 99) <= 10)
+                        ? "#059669"
+                        : (selected?.location?.accuracyRating === "MODERATE" || (selected?.location?.accuracy ?? 99) <= 30)
+                          ? "#0284c7"
+                          : "#d97706",
                 "line-width": 2,
                 "line-opacity": 0.85,
                 "line-dasharray":
-                  selected?.location?.accuracyRating === "COARSE" || (selected?.location?.accuracy ?? 99) > 30
+                  selected?.location?.accuracyRating === "COARSE" || (selected?.location?.accuracy ?? 99) > 30 || selected?.location?.source === "NETWORK"
                     ? [3, 2]
                     : [1, 0],
               }}
@@ -340,19 +344,24 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
           const isSelected = p.id === selectedId;
           const isStale = p.locationStatus === "STALE";
           const isOffline = p.networkStatus === "OFFLINE" || p.dutyStatus === "OFF DUTY";
+          const isNetwork = loc.source === "NETWORK" || p.trackingStatus === "NETWORK LOCATION";
+          const isLocOff = p.trackingStatus === "LOCATION OFF";
+          const isPermDenied = p.trackingStatus === "PERMISSION DENIED";
           const isOptimal = loc.accuracy <= 10.0;
           const isModerate = loc.accuracy > 10.0 && loc.accuracy <= 30.0;
           const isCoarse = loc.accuracy > 30.0;
 
           const color = isSOS
             ? "#dc2626" // Red 600
-            : isStale || isOffline
+            : isStale || isOffline || isLocOff || isPermDenied
               ? "#64748b" // Slate 500
-              : isOptimal
-                ? "#059669" // Emerald 600
-                : isModerate
-                  ? "#0284c7" // Sky 600
-                  : "#d97706"; // Amber 600
+              : isNetwork
+                ? "#0891b2" // Cyan 600 (Network fallback)
+                : isOptimal
+                  ? "#059669" // Emerald 600 (GPS Verified)
+                  : isModerate
+                    ? "#0284c7" // Sky 600
+                    : "#d97706"; // Amber 600
 
           const initials = p.name
             .split(" ")
@@ -375,7 +384,7 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
               <button
                 type="button"
                 aria-label={`Select personnel ${p.name}`}
-                title={`${p.name}${isStale ? " — Stale GPS" : ""}${isOffline ? " — Offline" : ""}${isOptimal ? ` — Optimal GPS (±${Math.round(loc.accuracy)}m)` : isModerate ? ` — Moderate (±${Math.round(loc.accuracy)}m)` : ` — Coarse Fix (±${Math.round(loc.accuracy)}m)`}`}
+                title={`${p.name}${isNetwork ? " — Network Fallback Location" : ""}${isStale ? " — Stale GPS" : ""}${isOffline ? " — Offline" : ""}${isOptimal ? ` — Optimal GPS (±${Math.round(loc.accuracy)}m)` : isModerate ? ` — Moderate (±${Math.round(loc.accuracy)}m)` : ` — Coarse Fix (±${Math.round(loc.accuracy)}m)`}`}
                 className="group relative flex flex-col items-center outline-none cursor-pointer"
               >
                 {/* SOS pulse effect */}
@@ -431,17 +440,22 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
                   <span>{p.name}</span>
                   <span
                     className={`text-[9px] px-1 py-0.2 rounded font-mono font-bold flex items-center gap-1 ${
-                      isOptimal
-                        ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/60"
-                        : isModerate
-                          ? "bg-sky-950/80 text-sky-300 border border-sky-800/60"
-                          : "bg-amber-950/80 text-amber-300 border border-amber-800/60"
+                      isNetwork
+                        ? "bg-cyan-950/90 text-cyan-300 border border-cyan-800/70"
+                        : isOptimal
+                          ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/60"
+                          : isModerate
+                            ? "bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                            : "bg-amber-950/80 text-amber-300 border border-amber-800/60"
                     }`}
                   >
                     ±{Math.round(loc.accuracy)}m
-                    {isOptimal && <span className="text-[8px] text-emerald-400 font-sans">≤10m</span>}
-                    {isCoarse && <span className="text-[8px] text-amber-400 font-sans">COARSE</span>}
+                    {isNetwork && <span className="text-[8px] text-cyan-400 font-sans font-bold">NET</span>}
+                    {!isNetwork && isOptimal && <span className="text-[8px] text-emerald-400 font-sans">≤10m</span>}
+                    {!isNetwork && isCoarse && <span className="text-[8px] text-amber-400 font-sans">COARSE</span>}
                   </span>
+                  {isLocOff && <span className="ml-0.5 text-[9px] bg-rose-950/80 border border-rose-800/60 text-rose-300 px-1 rounded font-sans">LOC OFF</span>}
+                  {isPermDenied && <span className="ml-0.5 text-[9px] bg-rose-950/80 border border-rose-800/60 text-rose-300 px-1 rounded font-sans">NO PERM</span>}
                   {isStale && <span className="ml-0.5 text-[9px] text-amber-400 font-sans">STALE</span>}
                   {isOffline && <span className="ml-0.5 text-[9px] text-rose-400 font-sans">OFFLINE</span>}
                 </span>
@@ -598,11 +612,13 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
             className={`w-3.5 h-3.5 rounded-full flex-shrink-0 ${
               selected.sosStatus === "SOS ACTIVE"
                 ? "bg-rose-500 animate-ping"
-                : selected.locationStatus === "TRACKING ACTIVE"
-                  ? (selected.location.accuracy <= 10 ? "bg-emerald-400 ring-2 ring-emerald-500/50" : selected.location.accuracy <= 30 ? "bg-sky-400" : "bg-amber-400")
-                  : selected.locationStatus === "STALE"
-                    ? "bg-amber-400"
-                    : "bg-slate-400"
+                : selected.trackingStatus === "NETWORK LOCATION" || selected.location.source === "NETWORK"
+                  ? "bg-cyan-400 ring-2 ring-cyan-500/50"
+                  : selected.locationStatus === "TRACKING ACTIVE"
+                    ? (selected.location.accuracy <= 10 ? "bg-emerald-400 ring-2 ring-emerald-500/50" : selected.location.accuracy <= 20 ? "bg-sky-400" : "bg-amber-400")
+                    : selected.locationStatus === "STALE"
+                      ? "bg-amber-400"
+                      : "bg-slate-400"
             }`}
           />
           <div className="min-w-0 flex-1">
@@ -610,28 +626,42 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
               <span className="font-bold text-xs sm:text-sm text-white truncate">{selected.name}</span>
               <span
                 className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
-                  selected.location.accuracy <= 10
-                    ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/60"
-                    : selected.location.accuracy <= 20
-                      ? "bg-sky-950/80 text-sky-300 border border-sky-800/60"
-                      : "bg-amber-950/80 text-amber-300 border border-amber-800/60"
+                  selected.trackingStatus === "NETWORK LOCATION" || selected.location.source === "NETWORK"
+                    ? "bg-cyan-950/80 text-cyan-300 border border-cyan-800/60"
+                    : selected.location.accuracy <= 10
+                      ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/60"
+                      : selected.location.accuracy <= 20
+                        ? "bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                        : "bg-amber-950/80 text-amber-300 border border-amber-800/60"
                 }`}
               >
                 ±{selected.location.accuracy.toFixed(1)}m
               </span>
               <span
                 className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-bold ${
-                  selected.location.accuracy <= 10
-                    ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50"
-                    : selected.location.accuracy <= 20
-                      ? "bg-sky-900/60 text-sky-300 border border-sky-700/50"
-                      : "bg-amber-900/60 text-amber-300 border border-amber-700/50"
+                  selected.trackingStatus === "NETWORK LOCATION" || selected.location.source === "NETWORK"
+                    ? "bg-cyan-900/60 text-cyan-300 border border-cyan-700/50"
+                    : selected.location.accuracy <= 10
+                      ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50"
+                      : selected.location.accuracy <= 20
+                        ? "bg-sky-900/60 text-sky-300 border border-sky-700/50"
+                        : "bg-amber-900/60 text-amber-300 border border-amber-700/50"
                 }`}
               >
-                {selected.location.accuracy <= 10 ? "≤10m Optimal" : selected.location.accuracy <= 20 ? "≤20m Verified" : "Low Accuracy"}
+                {selected.trackingStatus === "NETWORK LOCATION" || selected.location.source === "NETWORK"
+                  ? "Network Fallback"
+                  : selected.location.accuracy <= 10
+                    ? "≤10m Optimal"
+                    : selected.location.accuracy <= 20
+                      ? "≤20m Verified"
+                      : "Low Accuracy"}
               </span>
               {selected.location.source && (
-                <span className="text-[9px] uppercase px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 font-mono">
+                <span className={`text-[9px] uppercase px-1.5 py-0.2 rounded font-mono ${
+                  selected.location.source === "NETWORK"
+                    ? "bg-cyan-950 border border-cyan-800 text-cyan-300 font-bold"
+                    : "bg-slate-800 text-slate-300"
+                }`}>
                   {selected.location.source}
                 </span>
               )}

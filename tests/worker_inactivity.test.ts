@@ -9,6 +9,8 @@ import { getDashboardOverview } from "../src/services/control-room/dashboard_ser
 import { fetchStaffList } from "../src/services/staff/staff_service";
 import { UserStatus, DeviceStatus } from "../generated/prisma/enums";
 
+process.env.DISABLE_DUTY_WINDOW = "1";
+
 test("Automatic Worker Inactivity and Sign-Out Lifecycle", async (t) => {
   let userA: any;
   let personnelA: any;
@@ -260,6 +262,7 @@ test("Automatic Worker Inactivity and Sign-Out Lifecycle", async (t) => {
   });
 
   await t.test("Cleanup test fixtures", async () => {
+    delete process.env.DISABLE_DUTY_WINDOW;
     await prisma.heartbeat.deleteMany({ where: { personnelId: { in: [personnelA.id, personnelB.id] } } });
     await prisma.location.deleteMany({ where: { personnelId: { in: [personnelA.id, personnelB.id] } } });
     await prisma.locationEvent.deleteMany({ where: { personnelId: { in: [personnelA.id, personnelB.id] } } });

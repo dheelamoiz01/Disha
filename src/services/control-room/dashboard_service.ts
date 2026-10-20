@@ -4,6 +4,11 @@ import {
   getHeartbeatStaleMs,
   getLocationStaleMs,
 } from "@/lib/config/inactivity";
+import {
+  getDutyCurrentTime,
+  isWithinDutyWindowIST,
+  isSameDayIST,
+} from "@/lib/utils/duty_window";
 
 // Short-lived in-memory cache to coalesce rapid concurrent requests (e.g. multiple open dashboard tabs)
 let cachedOverview: { data: any[]; timestamp: number } | null = null;
@@ -14,7 +19,9 @@ export function invalidateDashboardCache() {
 }
 
 export async function getDashboardOverview(forceFresh: boolean = false) {
-  const now = Date.now();
+  const dutyNow = getDutyCurrentTime();
+  const now = dutyNow.getTime();
+  const isDutyHours = isWithinDutyWindowIST(dutyNow);
   const isTest =
     process.env.NODE_ENV === "test" ||
     process.env.DISABLE_CACHE === "1" ||
@@ -53,6 +60,11 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
           latestAccuracy: true,
           latestSource: true,
           latestLocationTime: true,
+          locationEnabled: true,
+          permissionState: true,
+          isTrackingRunning: true,
+          gpsAvailable: true,
+          lastGpsFixTime: true,
         },
       },
       dutySessions: {
@@ -184,21 +196,86 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
       lastSeen = new Date(latestActiveTime);
     }
 
-    // Location State Logic (decoupled from duty status)
-    let locationStatus = "NO DATA";
-    if (!activeDuty) {
-      locationStatus = "OFF DUTY";
-    } else if (ev && ev.eventType === "LOCATION_UNAVAILABLE" && evTime >= locTime) {
-      locationStatus = "LOCATION UNAVAILABLE";
-    } else if (loc) {
-      const timeDiff = now - locTime;
-      if (timeDiff <= LOC_STALE_THRESHOLD_MS && deviceStatus === "ONLINE") {
-        locationStatus = "TRACKING ACTIVE";
+    // Detailed Tracking Status hierarchy:
+    // - "GPS ACTIVE": Recent valid GPS fix
+    // - "NETWORK LOCATION": Recent valid network fix
+    // - "LOCATION OFF": Android reports system Location disabled
+    // - "PERMISSION DENIED": Required location permission missing
+    // - "GPS UNAVAILABLE": Location enabled but no valid GPS fix available
+    // - "INTERNET DISCONNECTED": Device reported network loss
+    // - "TRACKING INTERRUPTED": Tracking service stopped or device signed out
+    // - "STALE / OFFLINE": No recent heartbeat; device unreachable
+    // - "OUTSIDE DUTY HOURS": Outside 07:00–22:00 IST
+
+    let trackingStatus = "STALE / OFFLINE";
+    let statusReason = "No telemetry received";
+    let confirmedByDevice = false;
+
+    if (!isDutyHours) {
+      trackingStatus = "OUTSIDE DUTY HOURS";
+      statusReason = "Outside permitted duty window (07:00 AM – 10:00 PM IST)";
+    } else if (isDeviceSignedOut) {
+      trackingStatus = "TRACKING INTERRUPTED";
+      statusReason = "Device is signed out or inactive";
+      confirmedByDevice = true;
+    } else if (deviceStatus === "OFFLINE") {
+      if (primaryDevice?.networkState === "OFFLINE") {
+        trackingStatus = "INTERNET DISCONNECTED";
+        statusReason = "Device reported network disconnected";
+        confirmedByDevice = true;
       } else {
-        locationStatus = "STALE";
+        trackingStatus = "STALE / OFFLINE";
+        statusReason = `No heartbeat received within ${Math.round(HB_TIMEOUT_MS / 60000)} minutes`;
+        confirmedByDevice = false;
       }
     } else {
-      locationStatus = "NO DATA";
+      // Device is ONLINE, check confirmed device-reported telemetry
+      confirmedByDevice = true;
+      if (primaryDevice?.locationEnabled === false) {
+        trackingStatus = "LOCATION OFF";
+        statusReason = "Device location is disabled in Android Settings";
+      } else if (primaryDevice?.permissionState === "DENIED") {
+        trackingStatus = "PERMISSION DENIED";
+        statusReason = "Required location permissions are denied or revoked";
+      } else if (primaryDevice?.isTrackingRunning === false) {
+        trackingStatus = "TRACKING INTERRUPTED";
+        statusReason = "Location tracking service has stopped";
+      } else if (primaryDevice?.gpsAvailable === false || (ev && ev.eventType === "LOCATION_UNAVAILABLE" && evTime >= locTime)) {
+        trackingStatus = "GPS UNAVAILABLE";
+        statusReason = "Location enabled but GPS provider fix is unavailable";
+      } else if (loc) {
+        const timeDiff = now - locTime;
+        const isLocFromToday = isSameDayIST(new Date(locTime), new Date(now));
+        if (timeDiff <= LOC_STALE_THRESHOLD_MS && isLocFromToday) {
+          if (loc.source === "NETWORK") {
+            trackingStatus = "NETWORK LOCATION";
+            statusReason = `Approximate network-based fix (±${Math.round(loc.accuracy)}m)`;
+          } else {
+            trackingStatus = "GPS ACTIVE";
+            statusReason = `Verified GPS satellite fix (±${Math.round(loc.accuracy)}m)`;
+          }
+        } else {
+          trackingStatus = "GPS UNAVAILABLE";
+          statusReason = "Awaiting fresh location fix (previous fix stale)";
+        }
+      } else {
+        trackingStatus = "GPS UNAVAILABLE";
+        statusReason = "Awaiting initial location fix from device";
+      }
+    }
+
+    // Determine locationStatus (for backward compatibility and live map filters):
+    let locationStatus = "LOCATION UNAVAILABLE";
+    if (!activeDuty) {
+      locationStatus = "OFF DUTY";
+    } else if (!isDutyHours) {
+      locationStatus = "STALE";
+    } else if (trackingStatus === "GPS ACTIVE" || trackingStatus === "NETWORK LOCATION") {
+      locationStatus = "TRACKING ACTIVE";
+    } else if (trackingStatus === "STALE / OFFLINE") {
+      locationStatus = "STALE";
+    } else {
+      locationStatus = "LOCATION UNAVAILABLE";
     }
 
     // Assess GPS accuracy rating and age
@@ -217,19 +294,30 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
       else accuracyRating = "COARSE"; // > 20m is Low Accuracy
     }
 
+    const lastGpsFixTime = primaryDevice?.lastGpsFixTime
+      ? new Date(primaryDevice.lastGpsFixTime)
+      : loc?.source === "GPS"
+        ? new Date(loc.recordedAt)
+        : null;
+
     return {
       id: p.id,
       name: p.name,
       personnelCode: p.personnelCode,
       designation: p.designation,
       unit: p.unit,
-      dutyStatus: activeDuty ? "ON DUTY" : "OFF DUTY",
+      dutyStatus: activeDuty && isDutyHours ? "ON DUTY" : "OFF DUTY",
       locationStatus,
+      trackingStatus,
+      statusReason,
+      confirmedByDevice,
       deviceStatus,
       networkStatus,
       sosStatus: activeSOS ? "SOS ACTIVE" : "NONE",
       lastSeen,
       lastHeartbeat,
+      lastGpsFixTime,
+      lastKnownLocationAgeSeconds: accuracyAgeSeconds,
       location: loc
         ? {
             latitude: loc.latitude,
