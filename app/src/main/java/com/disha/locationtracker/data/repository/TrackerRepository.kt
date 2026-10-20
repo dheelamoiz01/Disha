@@ -8,6 +8,7 @@ import com.disha.locationtracker.data.local.OfflineLocationDbHelper
 import com.disha.locationtracker.data.model.*
 import com.disha.locationtracker.data.remote.ApiClient
 import com.disha.locationtracker.service.LocationTrackingService
+import com.disha.locationtracker.util.DutyTimeHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -55,6 +56,12 @@ class TrackerRepository(
         batteryLevel: Float? = null,
         networkState: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
+        // Enforce duty window (07:00 AM - 10:00 PM IST):
+        // Only location data collected during the permitted duty window may be uploaded to backend or persisted
+        if (!DutyTimeHelper.isWithinDutyWindow(locationTimestamp)) {
+            return@withContext false
+        }
+
         val clientEventId = UUID.randomUUID().toString()
         val recordedAt = getIsoTimestamp(Date(locationTimestamp))
         val trackingMode = if (prefs.isSosActive) "SOS" else "NORMAL"
@@ -90,20 +97,22 @@ class TrackerRepository(
                 prefs.isSosActive = false
                 LocationTrackingService.stop(DishaApplication.instance)
             } else {
-                // Buffer to SQLite on temporary network failure or server 5xx
-                val record = CachedLocationRecord(
-                    clientEventId = clientEventId,
-                    latitude = latitude,
-                    longitude = longitude,
-                    accuracy = accuracy,
-                    recordedAt = recordedAt,
-                    source = source,
-                    trackingMode = trackingMode,
-                    batteryLevel = batteryLevel,
-                    networkState = networkState
-                )
-                dbHelper.insertLocation(record)
-                refreshPendingCount()
+                // Buffer to SQLite on temporary network failure or server 5xx (only during duty window)
+                if (DutyTimeHelper.isWithinDutyWindow(locationTimestamp)) {
+                    val record = CachedLocationRecord(
+                        clientEventId = clientEventId,
+                        latitude = latitude,
+                        longitude = longitude,
+                        accuracy = accuracy,
+                        recordedAt = recordedAt,
+                        source = source,
+                        trackingMode = trackingMode,
+                        batteryLevel = batteryLevel,
+                        networkState = networkState
+                    )
+                    dbHelper.insertLocation(record)
+                    refreshPendingCount()
+                }
             }
             false
         }
@@ -119,7 +128,24 @@ class TrackerRepository(
         val pending = dbHelper.getPendingLocations(limit = 50)
         if (pending.isEmpty()) return 0
 
-        val payloads = pending.map { item ->
+        // Prune any records that fall outside duty hours
+        val validPending = pending.filter { item ->
+            try {
+                val parsed = synchronized(isoDateFormat) { isoDateFormat.parse(item.recordedAt) }
+                if (parsed != null && !DutyTimeHelper.isWithinDutyWindow(parsed.time)) {
+                    dbHelper.deleteLocationByEventId(item.clientEventId)
+                    false
+                } else {
+                    true
+                }
+            } catch (_: Exception) {
+                true
+            }
+        }
+
+        if (validPending.isEmpty()) return 0
+
+        val payloads = validPending.map { item ->
             LocationTelemetryPayload(
                 clientEventId = item.clientEventId,
                 latitude = item.latitude,
@@ -190,7 +216,12 @@ class TrackerRepository(
     suspend fun sendHeartbeat(
         batteryLevel: Float?,
         networkState: String?,
-        appVersion: String?
+        appVersion: String?,
+        locationEnabled: Boolean? = null,
+        permissionState: String? = null,
+        isTrackingRunning: Boolean? = null,
+        gpsAvailable: Boolean? = null,
+        lastGpsFixTime: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val personnelId = prefs.personnelId ?: return@withContext false
         val payload = HeartbeatPayload(
@@ -199,7 +230,12 @@ class TrackerRepository(
             networkState = networkState,
             appVersion = appVersion,
             healthState = if (prefs.isSosActive) "SOS" else "HEALTHY",
-            recordedAt = getIsoTimestamp()
+            recordedAt = getIsoTimestamp(),
+            locationEnabled = locationEnabled,
+            permissionState = permissionState,
+            isTrackingRunning = isTrackingRunning,
+            gpsAvailable = gpsAvailable,
+            lastGpsFixTime = lastGpsFixTime
         )
         val result = apiClient.sendHeartbeat(payload)
         if (result.isFailure) {
@@ -209,6 +245,20 @@ class TrackerRepository(
                 LocationTrackingService.stop(DishaApplication.instance)
             }
         }
+        result.isSuccess
+    }
+
+    suspend fun sendLocationEvent(
+        eventType: String,
+        metadata: Map<String, Any>? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val payload = LocationEventPayload(
+            clientEventId = UUID.randomUUID().toString(),
+            eventType = eventType,
+            recordedAt = getIsoTimestamp(),
+            metadata = metadata
+        )
+        val result = apiClient.sendEvent(payload)
         result.isSuccess
     }
 

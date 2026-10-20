@@ -90,7 +90,12 @@ data class HeartbeatPayload(
     val networkState: String?,
     val appVersion: String?,
     val healthState: String?,
-    val recordedAt: String // ISO-8601 string
+    val recordedAt: String, // ISO-8601 string
+    val locationEnabled: Boolean? = null,
+    val permissionState: String? = null,
+    val isTrackingRunning: Boolean? = null,
+    val gpsAvailable: Boolean? = null,
+    val lastGpsFixTime: String? = null
 )
 
 data class SOSRequest(

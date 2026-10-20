@@ -25,6 +25,7 @@ import com.disha.locationtracker.data.model.LocationTelemetryPayload
 import com.disha.locationtracker.databinding.ActivityMainBinding
 import com.disha.locationtracker.databinding.DialogConsentBinding
 import com.disha.locationtracker.service.LocationTrackingService
+import com.disha.locationtracker.util.DutyTimeHelper
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationServices
@@ -345,6 +346,8 @@ class MainActivity : AppCompatActivity() {
         val coarseOnly = hasCoarseOnlyPermission()
         binding.approximateLocationCard.visibility = if (isGpsEnabled && coarseOnly) View.VISIBLE else View.GONE
 
+        val isDutyHours = DutyTimeHelper.isWithinDutyWindow()
+
         // 3. Update Tracking Status Badge & Text
         when {
             isSos -> {
@@ -383,14 +386,40 @@ class MainActivity : AppCompatActivity() {
                 binding.sosButton.text = getString(R.string.trigger_sos)
                 binding.sosButton.setBackgroundColor(ContextCompat.getColor(this, R.color.danger))
             }
-            hasReceivedLocationFix -> {
-                binding.trackingBadge.text = getString(R.string.status_tracking_active)
-                binding.trackingBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.success_surface))
-                binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.success))
+            !isDutyHours -> {
+                binding.trackingBadge.text = "STANDBY (OVERNIGHT)"
+                binding.trackingBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.primary_light))
+                binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.primary_dark))
 
-                binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.success))
-                binding.trackingStatusText.text = "Tracking Active • 24/7 foreground service operational"
-                binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.success))
+                binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.primary))
+                binding.trackingStatusText.text = "Duty window closed (07:00 AM – 10:00 PM IST) • Resumes at 07:00 AM"
+                binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.primary))
+
+                binding.sosButton.text = getString(R.string.trigger_sos)
+                binding.sosButton.setBackgroundColor(ContextCompat.getColor(this, R.color.danger))
+            }
+            hasReceivedLocationFix -> {
+                val lastSource = repository.lastLocation.value?.source
+                val isNetworkFallback = lastSource == "NETWORK"
+                val acc = repository.lastLocation.value?.accuracy ?: 0f
+
+                if (isNetworkFallback) {
+                    binding.trackingBadge.text = "NETWORK FALLBACK (±${Math.round(acc)}m)"
+                    binding.trackingBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.primary_light))
+                    binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.primary))
+
+                    binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.primary))
+                    binding.trackingStatusText.text = "Network Location Active • Cellular/Wi-Fi fallback"
+                    binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.primary))
+                } else {
+                    binding.trackingBadge.text = getString(R.string.status_tracking_active)
+                    binding.trackingBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.success_surface))
+                    binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.success))
+
+                    binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.success))
+                    binding.trackingStatusText.text = "GPS Tracking Active • ≤20m verified satellite fixes"
+                    binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.success))
+                }
 
                 binding.sosButton.text = getString(R.string.trigger_sos)
                 binding.sosButton.setBackgroundColor(ContextCompat.getColor(this, R.color.danger))

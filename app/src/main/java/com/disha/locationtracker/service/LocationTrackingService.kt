@@ -22,9 +22,11 @@ import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 import com.disha.locationtracker.DishaApplication
 import com.disha.locationtracker.R
 import com.disha.locationtracker.ui.MainActivity
+import com.disha.locationtracker.util.DutyTimeHelper
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.*
@@ -51,6 +53,9 @@ class LocationTrackingService : Service(), LocationListener {
     private var isTrackingStarted = false
     private var lastTrailRecordedElapsedRealtimeMs = 0L
     private var isFirstDutyPoint = true
+    private var lastGpsLocationTime: Long = 0L
+    private var lastGpsElapsedRealtime: Long = 0L
+    private var wasLocationAvailable: Boolean = true
 
     override fun onCreate() {
         super.onCreate()
@@ -154,13 +159,13 @@ class LocationTrackingService : Service(), LocationListener {
             locationCallback = object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val location = result.lastLocation ?: return
-                    val source = if (location.provider == LocationManager.GPS_PROVIDER || location.accuracy <= 25f) "GPS" else "NETWORK"
+                    val source = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
                     handleNewLocation(location, source)
                 }
 
                 override fun onLocationAvailability(avail: LocationAvailability) {
                     if (!avail.isLocationAvailable) {
-                        updateNotification(lastLocation, "Acquiring GPS satellites...")
+                        updateNotification(lastLocation, "Acquiring GPS / Network fix...")
                     }
                 }
             }
@@ -179,7 +184,7 @@ class LocationTrackingService : Service(), LocationListener {
                 if (loc != null && lastLocation == null) {
                     val ageMs = (SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L
                     if (ageMs <= 60_000L) {
-                        val source = if (loc.provider == LocationManager.GPS_PROVIDER || loc.accuracy <= 25f) "GPS" else "NETWORK"
+                        val source = if (loc.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
                         handleNewLocation(loc, source)
                     }
                 }
@@ -240,7 +245,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        val src = if (location.provider == LocationManager.GPS_PROVIDER || location.accuracy <= 25f) "GPS" else "NETWORK"
+        val src = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
         handleNewLocation(location, src)
     }
 
@@ -252,7 +257,13 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        // 1. Sanity check: Reject non-finite coordinates or (0,0)
+        // 1. Mandatory Duty Window Enforcement (07:00 AM to 10:00 PM IST)
+        if (!DutyTimeHelper.isWithinDutyWindow()) {
+            updateNotification(lastLocation, "Standby: Outside duty hours (07:00 AM – 10:00 PM IST)")
+            return
+        }
+
+        // 2. Sanity check: Reject non-finite coordinates or (0,0)
         if (!location.latitude.isFinite() || !location.longitude.isFinite() ||
             (location.latitude == 0.0 && location.longitude == 0.0) ||
             Math.abs(location.latitude) > 90.0 || Math.abs(location.longitude) > 180.0
@@ -260,19 +271,27 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        // 2. Freshness check: Reject stale cached fixes (> 60s elapsed age) if we already have a recent fix
+        // 3. Freshness check: Reject stale cached fixes (> 60s elapsed age) if we already have a recent fix
         val ageMs = (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000L
         if (ageMs > 60_000L && lastLocation != null) {
             return
         }
 
-        // 3. Out-of-order check: Reject fixes timestamped older than last known by > 5 seconds
+        // 4. Out-of-order check: Reject fixes timestamped older than last known by > 5 seconds
         val prev = lastLocation
         if (prev != null && location.time < prev.time - 5000L) {
             return
         }
 
-        // 4. Quality Selection & Coarse Fix Dampening:
+        // 5. Track GPS vs Network fix timestamp
+        val isGpsFix = location.provider == LocationManager.GPS_PROVIDER || providerSource == "GPS"
+        val fixTimestamp = if (location.time > 0L) location.time else System.currentTimeMillis()
+        if (isGpsFix) {
+            lastGpsLocationTime = fixTimestamp
+            lastGpsElapsedRealtime = SystemClock.elapsedRealtime()
+        }
+
+        // 6. Quality Selection & Coarse Fix Dampening:
         // A location with accuracy <= 20.0m is VERIFIED.
         // A location with accuracy > 20.0m is COARSE (e.g. 69m cell tower bounce).
         // If we have a fresh verified fix (<= 20m) recorded within the last 60 seconds:
@@ -297,20 +316,18 @@ class LocationTrackingService : Service(), LocationListener {
 
         val batteryLevel = getBatteryPercentage()
         val networkState = getNetworkType()
-        val fixTimestamp = if (location.time > 0L) location.time else System.currentTimeMillis()
 
         // Normalize source strictly to "GPS" or "NETWORK" for backend Prisma enum compatibility
         val normalizedSource = when {
-            location.provider == LocationManager.GPS_PROVIDER || providerSource == "GPS" -> "GPS"
+            isGpsFix -> "GPS"
             location.provider == LocationManager.NETWORK_PROVIDER || providerSource == "NETWORK" -> "NETWORK"
-            location.hasAccuracy() && location.accuracy <= 25f -> "GPS"
             else -> "NETWORK"
         }
 
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
-        // 5. 5-Minute Historical Trail Recording Gate:
+        // 7. 5-Minute Historical Trail Recording Gate:
         // While a staff member is on active duty, persist one historical trail point approximately every 5 minutes.
         // Immediate recording occurs if:
         //   - Emergency SOS is active (continuous emergency telemetry)
@@ -347,11 +364,27 @@ class LocationTrackingService : Service(), LocationListener {
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
     override fun onProviderEnabled(provider: String) {
+        if (provider == LocationManager.GPS_PROVIDER) {
+            serviceScope.launch {
+                DishaApplication.instance.repository.sendLocationEvent(
+                    "LOCATION_RECOVERED",
+                    mapOf("provider" to provider, "reason" to "GPS provider enabled")
+                )
+            }
+        }
         startLocationUpdates()
     }
 
     override fun onProviderDisabled(provider: String) {
-        updateNotification(lastLocation, "Location service disabled on device")
+        if (provider == LocationManager.GPS_PROVIDER) {
+            serviceScope.launch {
+                DishaApplication.instance.repository.sendLocationEvent(
+                    "LOCATION_UNAVAILABLE",
+                    mapOf("provider" to provider, "reason" to "GPS provider disabled")
+                )
+            }
+        }
+        updateNotification(lastLocation, "Location provider ($provider) disabled on device")
     }
 
     private fun startPeriodicHeartbeats() {
@@ -367,7 +400,53 @@ class LocationTrackingService : Service(), LocationListener {
                 val battery = getBatteryPercentage()
                 val net = getNetworkType()
                 val appVersion = "1.0.0"
-                DishaApplication.instance.repository.sendHeartbeat(battery, net, appVersion)
+
+                val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                val locEnabled = if (lm != null) LocationManagerCompat.isLocationEnabled(lm) else false
+                val fineGranted = ContextCompat.checkSelfPermission(
+                    this@LocationTrackingService,
+                    android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                val coarseGranted = ContextCompat.checkSelfPermission(
+                    this@LocationTrackingService,
+                    android.Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                val permState = when {
+                    fineGranted -> "GRANTED"
+                    coarseGranted -> "PARTIAL"
+                    else -> "DENIED"
+                }
+                val isGpsAvail = lm?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true &&
+                        (SystemClock.elapsedRealtime() - lastGpsElapsedRealtime <= 60_000L || lastGpsElapsedRealtime == 0L)
+                val lastGpsIso = if (lastGpsLocationTime > 0L) {
+                    DishaApplication.instance.repository.getIsoTimestamp(Date(lastGpsLocationTime))
+                } else null
+
+                // Detect state transitions to emit audit event
+                if (!locEnabled && wasLocationAvailable) {
+                    wasLocationAvailable = false
+                    DishaApplication.instance.repository.sendLocationEvent(
+                        "LOCATION_UNAVAILABLE",
+                        mapOf("reason" to "Location disabled in Android Settings")
+                    )
+                } else if (locEnabled && !wasLocationAvailable) {
+                    wasLocationAvailable = true
+                    DishaApplication.instance.repository.sendLocationEvent(
+                        "LOCATION_RECOVERED",
+                        mapOf("reason" to "Location restored in Android Settings")
+                    )
+                }
+
+                DishaApplication.instance.repository.sendHeartbeat(
+                    batteryLevel = battery,
+                    networkState = net,
+                    appVersion = appVersion,
+                    locationEnabled = locEnabled,
+                    permissionState = permState,
+                    isTrackingRunning = isTrackingStarted,
+                    gpsAvailable = isGpsAvail,
+                    lastGpsFixTime = lastGpsIso
+                )
             }
         }
     }
@@ -392,8 +471,10 @@ class LocationTrackingService : Service(), LocationListener {
         val statusText = when {
             extraStatus != null -> extraStatus
             prefs.isSosActive -> "EMERGENCY SOS BROADCASTING"
+            !DutyTimeHelper.isWithinDutyWindow() -> "Standby: Outside duty hours (07:00 AM – 10:00 PM IST)"
             location != null -> {
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(location.time))
+                val providerTag = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "Network"
                 val accRating = when {
                     location.accuracy <= 10.0f -> "Optimal (≤10m)"
                     location.accuracy <= 20.0f -> "Verified (≤20m)"
@@ -401,10 +482,11 @@ class LocationTrackingService : Service(), LocationListener {
                 }
                 String.format(
                     Locale.US,
-                    "Lat: %.5f, Lng: %.5f (±%.0fm • %s) • %s",
+                    "Lat: %.5f, Lng: %.5f (±%.0fm • %s • %s) • %s",
                     location.latitude,
                     location.longitude,
                     location.accuracy,
+                    providerTag,
                     accRating,
                     timeStr
                 )
@@ -420,10 +502,10 @@ class LocationTrackingService : Service(), LocationListener {
 
     private fun buildNotification(contentText: String): Notification {
         val prefs = DishaApplication.instance.prefs
-        val title = if (prefs.isSosActive) {
-            "DISHA — EMERGENCY SOS ACTIVE"
-        } else {
-            "DISHA Field Tracker — Tracking Active"
+        val title = when {
+            prefs.isSosActive -> "DISHA — EMERGENCY SOS ACTIVE"
+            !DutyTimeHelper.isWithinDutyWindow() -> "DISHA — Standby (07:00 AM – 10:00 PM IST)"
+            else -> "DISHA Field Tracker — Tracking Active"
         }
 
         val openActivityIntent = Intent(this, MainActivity::class.java).apply {

@@ -247,6 +247,26 @@ class ApiClient(private val prefs: AppPreferences) {
             }
         }
 
+    suspend fun sendEvent(payload: LocationEventPayload): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            try {
+                val url = "${prefs.serverUrl}/api/telemetry/event"
+                val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+                val httpRequest = Request.Builder().url(url).post(body).build()
+
+                client.newCall(httpRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        Result.success(true)
+                    } else {
+                        val err = response.body?.string().orEmpty()
+                        Result.failure(IOException("Event transmission failed (${response.code}): $err"))
+                    }
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
     suspend fun startSOS(clientEventId: String): Result<Boolean> =
         withContext(Dispatchers.IO) {
             try {

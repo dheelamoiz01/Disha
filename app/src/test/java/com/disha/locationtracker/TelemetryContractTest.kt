@@ -183,4 +183,66 @@ class TelemetryContractTest {
         assertTrue(shouldRecord(320_000L, isSos = true))
         assertEquals(320_000L, lastRecordedElapsedMs)
     }
+
+    @Test
+    fun testDutyTimeHelperISTBoundaries() {
+        val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+        // 06:59:59 IST is 01:29:59 UTC -> Outside duty window
+        val t_0659 = isoFormat.parse("2026-10-21T01:29:59.000Z")!!.time
+        assertFalse("06:59:59 IST must be outside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0659))
+
+        // 07:00:00 IST is 01:30:00 UTC -> Within duty window (Opening)
+        val t_0700 = isoFormat.parse("2026-10-21T01:30:00.000Z")!!.time
+        assertTrue("07:00:00 IST must be inside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
+
+        // 12:00:00 IST is 06:30:00 UTC -> Within duty window
+        val t_1200 = isoFormat.parse("2026-10-21T06:30:00.000Z")!!.time
+        assertTrue("12:00:00 IST must be inside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
+
+        // 21:59:59 IST is 16:29:59 UTC -> Within duty window
+        val t_2159 = isoFormat.parse("2026-10-21T16:29:59.000Z")!!.time
+        assertTrue("21:59:59 IST must be inside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2159))
+
+        // 22:00:00 IST is 16:30:00 UTC -> Outside duty window (Closing)
+        val t_2200 = isoFormat.parse("2026-10-21T16:30:00.000Z")!!.time
+        assertFalse("22:00:00 IST must be outside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2200))
+
+        // 22:30:00 IST is 17:00:00 UTC -> Outside duty window (Overnight)
+        val t_2230 = isoFormat.parse("2026-10-21T17:00:00.000Z")!!.time
+        assertFalse("22:30:00 IST must be outside duty window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2230))
+    }
+
+    @Test
+    fun testHeartbeatDeviceTrackingStatusContract() {
+        val payload = HeartbeatPayload(
+            personnelId = "pers-officer-status",
+            batteryLevel = 87.5f,
+            networkState = "CELLULAR",
+            appVersion = "1.0.0",
+            healthState = "HEALTHY",
+            recordedAt = "2026-10-21T08:00:00.000Z",
+            locationEnabled = true,
+            permissionState = "GRANTED",
+            isTrackingRunning = true,
+            gpsAvailable = true,
+            lastGpsFixTime = "2026-10-21T07:59:45.000Z"
+        )
+
+        val json = gson.toJson(payload)
+        assertTrue(json.contains("\"locationEnabled\":true"))
+        assertTrue(json.contains("\"permissionState\":\"GRANTED\""))
+        assertTrue(json.contains("\"isTrackingRunning\":true"))
+        assertTrue(json.contains("\"gpsAvailable\":true"))
+        assertTrue(json.contains("\"lastGpsFixTime\":\"2026-10-21T07:59:45.000Z\""))
+
+        val parsed = gson.fromJson(json, HeartbeatPayload::class.java)
+        assertEquals(true, parsed.locationEnabled)
+        assertEquals("GRANTED", parsed.permissionState)
+        assertEquals(true, parsed.isTrackingRunning)
+        assertEquals(true, parsed.gpsAvailable)
+        assertEquals("2026-10-21T07:59:45.000Z", parsed.lastGpsFixTime)
+    }
 }
