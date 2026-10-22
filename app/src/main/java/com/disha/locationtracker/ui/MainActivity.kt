@@ -392,7 +392,7 @@ class MainActivity : AppCompatActivity() {
                 binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.primary_dark))
 
                 binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.primary))
-                binding.trackingStatusText.text = "Restricted hours window (07:00 AM – 10:00 PM IST) • Resumes at 07:00 AM"
+                binding.trackingStatusText.text = "Authorised tracking window (07:00 AM – 07:00 PM IST) • Resumes at 07:00 AM"
                 binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.primary))
 
                 binding.sosButton.text = getString(R.string.trigger_sos)

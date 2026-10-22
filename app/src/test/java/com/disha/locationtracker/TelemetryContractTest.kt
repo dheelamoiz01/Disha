@@ -136,16 +136,16 @@ class TelemetryContractTest {
     }
 
     @Test
-    fun testTrailRecordingIntervalDefaultIs1Minute() {
-        // 1-minute location recording interval (60,000 ms)
+    fun testTrailRecordingIntervalDefaultIs30Seconds() {
+        // 30-second location trail recording interval (30,000 ms)
         val intervalMs = com.disha.locationtracker.service.LocationTrackingService.DEFAULT_TRAIL_RECORDING_INTERVAL_MS
-        assertEquals(60_000L, intervalMs)
-        assertEquals(1 * 60 * 1000L, intervalMs)
+        assertEquals(30_000L, intervalMs)
+        assertEquals(30 * 1000L, intervalMs)
     }
 
     @Test
     fun testTrailRecordingIntervalGateLogic() {
-        val intervalMs = 60_000L // 1 minute (60,000 ms)
+        val intervalMs = 30_000L // 30 seconds (30,000 ms)
         var lastRecordedElapsedMs = 0L
         var isFirstDutyPoint = true
 
@@ -163,57 +163,48 @@ class TelemetryContractTest {
         assertTrue(shouldRecord(0L, isSos = false))
         assertEquals(0L, lastRecordedElapsedMs)
 
-        // t = 15s: Live map fix arrives -> Should NOT record duplicate historical point
-        assertFalse(shouldRecord(15_000L, isSos = false))
+        // t = 10s: Live map fix arrives -> Should NOT record duplicate historical point
+        assertFalse(shouldRecord(10_000L, isSos = false))
 
-        // t = 30s: 30 seconds in -> Should NOT record (within 1-min window)
-        assertFalse(shouldRecord(30_000L, isSos = false))
+        // t = 20s: 20 seconds in -> Should NOT record (within 30s window)
+        assertFalse(shouldRecord(20_000L, isSos = false))
 
-        // t = 59s: 59s -> Should NOT record
-        assertFalse(shouldRecord(59_000L, isSos = false))
+        // t = 29s: 29s -> Should NOT record
+        assertFalse(shouldRecord(29_000L, isSos = false))
 
-        // t = 60s: 1m 00s -> SHOULD record (1-minute interval elapsed)
-        assertTrue(shouldRecord(60_000L, isSos = false))
-        assertEquals(60_000L, lastRecordedElapsedMs)
+        // t = 30s: 30s -> SHOULD record (30-second interval elapsed)
+        assertTrue(shouldRecord(30_000L, isSos = false))
+        assertEquals(30_000L, lastRecordedElapsedMs)
 
-        // t = 70s: 10s later -> Should NOT record
-        assertFalse(shouldRecord(70_000L, isSos = false))
+        // t = 40s: 10s later -> Should NOT record
+        assertFalse(shouldRecord(40_000L, isSos = false))
 
-        // t = 75s: Emergency SOS triggered -> SHOULD record immediately!
-        assertTrue(shouldRecord(75_000L, isSos = true))
-        assertEquals(75_000L, lastRecordedElapsedMs)
+        // t = 45s: Emergency SOS triggered -> SHOULD record immediately!
+        assertTrue(shouldRecord(45_000L, isSos = true))
+        assertEquals(45_000L, lastRecordedElapsedMs)
     }
 
     @Test
-    fun testDutyTimeHelper24x7ContinuousTracking() {
+    fun testDutyTimeHelperAuthorisedTrackingWindow() {
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
         }
 
-        // In 24×7 mode, all hours are active: night, morning, afternoon, evening
-        val t_0659 = isoFormat.parse("2026-10-21T01:29:59.000Z")!!.time // 06:59:59 IST
-        val t_0700 = isoFormat.parse("2026-10-21T01:30:00.000Z")!!.time // 07:00:00 IST
-        val t_1200 = isoFormat.parse("2026-10-21T06:30:00.000Z")!!.time // 12:00:00 IST
-        val t_2159 = isoFormat.parse("2026-10-21T16:29:59.000Z")!!.time // 21:59:59 IST
-        val t_2200 = isoFormat.parse("2026-10-21T16:30:00.000Z")!!.time // 22:00:00 IST
-        val t_2230 = isoFormat.parse("2026-10-21T17:00:00.000Z")!!.time // 22:30:00 IST
+        // Tracking schedule: 07:00 AM – 07:00 PM Asia/Kolkata (IST)
+        val t_0659 = isoFormat.parse("2026-10-21T01:29:59.000Z")!!.time // 06:59:59 IST (outside)
+        val t_0700 = isoFormat.parse("2026-10-21T01:30:00.000Z")!!.time // 07:00:00 IST (inside)
+        val t_1200 = isoFormat.parse("2026-10-21T06:30:00.000Z")!!.time // 12:00:00 IST (inside)
+        val t_1859 = isoFormat.parse("2026-10-21T13:29:59.000Z")!!.time // 18:59:59 IST (inside)
+        val t_1900 = isoFormat.parse("2026-10-21T13:30:00.000Z")!!.time // 19:00:00 IST (closed)
+        val t_1901 = isoFormat.parse("2026-10-21T13:31:00.000Z")!!.time // 19:01:00 IST (outside)
+        val t_2230 = isoFormat.parse("2026-10-21T17:00:00.000Z")!!.time // 22:30:00 IST (outside)
 
-        assertTrue("06:59:59 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0659))
-        assertTrue("07:00:00 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
-        assertTrue("12:00:00 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
-        assertTrue("21:59:59 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2159))
-        assertTrue("22:00:00 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2200))
-        assertTrue("22:30:00 IST must be permitted in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2230))
-
-        // When legacy restricted mode is explicitly enabled
-        try {
-            com.disha.locationtracker.util.DutyTimeHelper.enforceRestrictedHours = true
-            assertFalse("06:59:59 IST outside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0659))
-            assertTrue("07:00:00 IST inside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
-            assertFalse("22:00:00 IST outside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2200))
-        } finally {
-            com.disha.locationtracker.util.DutyTimeHelper.enforceRestrictedHours = false
-        }
+        assertFalse("06:59:59 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0659))
+        assertTrue("07:00:00 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
+        assertTrue("12:00:00 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
+        assertTrue("18:59:59 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1859))
+        assertFalse("19:01:00 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1901))
+        assertFalse("22:30:00 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2230))
     }
 
     @Test

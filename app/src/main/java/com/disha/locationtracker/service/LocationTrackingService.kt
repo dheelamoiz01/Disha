@@ -1,6 +1,7 @@
 package com.disha.locationtracker.service
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -12,6 +13,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
@@ -36,7 +38,7 @@ import java.util.*
 
 class LocationTrackingService : Service(), LocationListener {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var wakeLock: PowerManager.WakeLock? = null
 
     // Google Play Services Fused Location
@@ -48,6 +50,7 @@ class LocationTrackingService : Service(), LocationListener {
 
     private var heartbeatJob: Job? = null
     private var offlineSyncJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var lastLocation: Location? = null
     private var lastVerifiedLocation: Location? = null
     private var isTrackingStarted = false
@@ -62,12 +65,20 @@ class LocationTrackingService : Service(), LocationListener {
         super.onCreate()
         acquireWakeLock()
         startInForeground()
+        registerNetworkCallback()
         startLocationUpdates()
         startPeriodicHeartbeats()
         startPeriodicOfflineSync()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val prefs = DishaApplication.instance.prefs
+        if (!prefs.isLoggedIn) {
+            stopTracking()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         when (intent?.action) {
             ACTION_STOP_TRACKING -> {
                 stopTracking()
@@ -80,7 +91,7 @@ class LocationTrackingService : Service(), LocationListener {
                     updateNotification(lastLocation)
                 }
             }
-            ACTION_START_TRACKING -> {
+            ACTION_START_TRACKING, null -> {
                 isFirstDutyPoint = true
                 lastTrailRecordedElapsedRealtimeMs = 0L
                 lastLiveTransmittedElapsedRealtimeMs = 0L
@@ -88,13 +99,57 @@ class LocationTrackingService : Service(), LocationListener {
                 if (!isTrackingStarted) {
                     startLocationUpdates()
                 }
+                if (heartbeatJob == null || heartbeatJob?.isActive == false) {
+                    startPeriodicHeartbeats()
+                }
+                if (offlineSyncJob == null || offlineSyncJob?.isActive == false) {
+                    startPeriodicOfflineSync()
+                }
                 updateNotification(lastLocation)
             }
         }
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val prefs = DishaApplication.instance.prefs
+        // When worker closes the app UI or removes Disha from Recent Apps, tracking MUST continue.
+        // As a safeguard against aggressive OEM task killers, schedule an immediate restart alarm.
+        if (prefs.isLoggedIn && DutyTimeHelper.isWithinDutyWindow()) {
+            try {
+                val restartIntent = Intent(applicationContext, LocationTrackingService::class.java).apply {
+                    action = ACTION_START_TRACKING
+                }
+                val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PendingIntent.getForegroundService(
+                        applicationContext,
+                        1001,
+                        restartIntent,
+                        PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                } else {
+                    PendingIntent.getService(
+                        applicationContext,
+                        1001,
+                        restartIntent,
+                        PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                }
+                val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                alarmManager?.set(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 1000L,
+                    pendingIntent
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -103,6 +158,34 @@ class LocationTrackingService : Service(), LocationListener {
             setReferenceCounted(false)
             acquire(24 * 60 * 60 * 1000L) // Safe 24-hr max duration
         }
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                // When mobile data / Wi-Fi restores, immediately trigger offline queue flush
+                serviceScope.launch {
+                    try {
+                        DishaApplication.instance.repository.syncOfflineQueue()
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(networkCallback!!)
+        } catch (_: Exception) {}
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let {
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                cm?.unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+        }
+        networkCallback = null
     }
 
     private fun startInForeground() {
@@ -147,7 +230,12 @@ class LocationTrackingService : Service(), LocationListener {
     @SuppressLint("MissingPermission")
     private fun startFusedLocationUpdates() {
         try {
-            fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+            if (fusedLocationClient == null) {
+                fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+            }
+            locationCallback?.let {
+                try { fusedLocationClient?.removeLocationUpdates(it) } catch (_: Exception) {}
+            }
 
             val locationRequest = LocationRequest.Builder(
                 Priority.PRIORITY_HIGH_ACCURACY,
@@ -259,9 +347,9 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        // 1. Mandatory Duty Window Enforcement (if legacy restricted hours are enabled)
+        // 1. Mandatory Duty Window Enforcement: 07:00 AM – 07:00 PM IST
         if (!DutyTimeHelper.isWithinDutyWindow()) {
-            updateNotification(lastLocation, "Standby: Outside restricted duty window (07:00 AM – 10:00 PM IST)")
+            updateNotification(lastLocation, "Standby: Outside authorised tracking window (07:00 AM – 07:00 PM IST)")
             return
         }
 
@@ -329,9 +417,9 @@ class LocationTrackingService : Service(), LocationListener {
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
-        // 7. 1-Minute Historical Trail Recording & Live Map Telemetry Gate:
+        // 7. 30-Second Historical Trail Recording & Live Map Telemetry Gate:
         // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix)
-        // - Historical Trail: Persist historical trail point approximately every 1 minute (60,000 ms)
+        // - Historical Trail: Persist historical trail point approximately every 30 seconds (30,000 ms)
         val nowElapsed = SystemClock.elapsedRealtime()
         val elapsedSinceLastTrail = nowElapsed - lastTrailRecordedElapsedRealtimeMs
         val isHistoricalDue = isSos || isFirstDutyPoint || (elapsedSinceLastTrail >= trailRecordingIntervalMs)
@@ -340,8 +428,6 @@ class LocationTrackingService : Service(), LocationListener {
         val isLiveDue = isSos || isFirstDutyPoint || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
 
         if (!isLiveDue && !isHistoricalDue) {
-            // Live map position transmitted recently and 1-minute historical interval has not elapsed yet.
-            // Live notification and local state are already updated above.
             return
         }
 
@@ -393,6 +479,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     private fun startPeriodicHeartbeats() {
+        if (heartbeatJob?.isActive == true) return
         heartbeatJob = serviceScope.launch {
             while (isActive) {
                 delay(HEARTBEAT_INTERVAL_MS)
@@ -401,6 +488,10 @@ class LocationTrackingService : Service(), LocationListener {
                     stopTracking()
                     stopSelf()
                     break
+                }
+                if (!DutyTimeHelper.isWithinDutyWindow()) {
+                    updateNotification(lastLocation, "Standby: Outside authorised tracking window (07:00 AM – 07:00 PM IST)")
+                    continue
                 }
                 val battery = getBatteryPercentage()
                 val net = getNetworkType()
@@ -457,6 +548,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     private fun startPeriodicOfflineSync() {
+        if (offlineSyncJob?.isActive == true) return
         offlineSyncJob = serviceScope.launch {
             while (isActive) {
                 delay(OFFLINE_SYNC_INTERVAL_MS)
@@ -476,7 +568,7 @@ class LocationTrackingService : Service(), LocationListener {
         val statusText = when {
             extraStatus != null -> extraStatus
             prefs.isSosActive -> "EMERGENCY SOS BROADCASTING"
-            !DutyTimeHelper.isWithinDutyWindow() -> "Standby: Outside restricted duty window (07:00 AM – 10:00 PM IST)"
+            !DutyTimeHelper.isWithinDutyWindow() -> "Standby: Outside authorised tracking window (07:00 AM – 07:00 PM IST)"
             location != null -> {
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(location.time))
                 val providerTag = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "Network"
@@ -510,7 +602,7 @@ class LocationTrackingService : Service(), LocationListener {
         val title = when {
             prefs.isSosActive -> "DISHA — EMERGENCY SOS ACTIVE"
             !DutyTimeHelper.isWithinDutyWindow() -> "DISHA — Standby"
-            else -> "DISHA Field Tracker — 24×7 Tracking Active"
+            else -> "DISHA Field Tracker — Duty Tracking Active (07:00 AM – 07:00 PM IST)"
         }
 
         val openActivityIntent = Intent(this, MainActivity::class.java).apply {
@@ -523,30 +615,15 @@ class LocationTrackingService : Service(), LocationListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Action button to stop tracking safely from the notification
-        val stopIntent = Intent(this, LocationTrackingService::class.java).apply {
-            action = ACTION_STOP_TRACKING
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this,
-            1003,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         val builder = NotificationCompat.Builder(this, DishaApplication.CHANNEL_ID_TRACKING)
             .setContentTitle(title)
             .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_location)
             .setContentIntent(openActivityPendingIntent)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(
-                R.drawable.ic_location,
-                "Stop Tracking",
-                stopPendingIntent
-            )
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
 
         return builder.build()
     }
@@ -603,9 +680,14 @@ class LocationTrackingService : Service(), LocationListener {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        unregisterNetworkCallback()
         heartbeatJob?.cancel()
+        heartbeatJob = null
         offlineSyncJob?.cancel()
-        serviceScope.cancel()
+        offlineSyncJob = null
+
+        // Cancel running children without permanently killing the scope
+        serviceScope.coroutineContext.cancelChildren()
 
         wakeLock?.let {
             if (it.isHeld) {
@@ -630,21 +712,23 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_TRACKING = "com.disha.action.STOP_TRACKING"
         const val ACTION_TRIGGER_SOS = "com.disha.action.TRIGGER_SOS"
 
-        // 1-minute trail recording interval (60,000 ms)
-        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 1 * 60 * 1000L
+        // 30-second trail recording interval (30,000 ms)
+        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 30 * 1000L
         var trailRecordingIntervalMs: Long = DEFAULT_TRAIL_RECORDING_INTERVAL_MS
 
         // Live Map real-time transmission interval (30 seconds)
         const val LIVE_TRANSMISSION_INTERVAL_MS = 30_000L
 
-        // Fused Location request interval: check location every 30 seconds to maintain warm GPS lock
+        // Fused Location request interval: check location every 30 seconds
         private const val LOCATION_INTERVAL_MS = 30_000L
         private const val LOCATION_FASTEST_INTERVAL_MS = 15_000L
         private const val LOCATION_MIN_DISTANCE_M = 0f
         private const val LOCATION_MAX_WAIT_MS = 60_000L
 
-        private const val HEARTBEAT_INTERVAL_MS = 60_000L // 60 seconds
-        private const val OFFLINE_SYNC_INTERVAL_MS = 30_000L // 30 seconds
+        // Heartbeat interval: strictly every 30 seconds
+        private const val HEARTBEAT_INTERVAL_MS = 30_000L // 30 seconds
+        // Fast retry for offline sync queue: every 15 seconds
+        private const val OFFLINE_SYNC_INTERVAL_MS = 15_000L // 15 seconds fast retry
 
         fun start(context: Context) {
             val intent = Intent(context, LocationTrackingService::class.java).apply {

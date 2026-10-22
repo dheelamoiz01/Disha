@@ -43,9 +43,10 @@ class ApiClient(private val prefs: AppPreferences) {
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieJar)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .addInterceptor { chain ->
             val original = chain.request()
             val requestBuilder = original.newBuilder()

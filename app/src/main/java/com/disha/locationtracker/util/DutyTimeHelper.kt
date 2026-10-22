@@ -6,11 +6,11 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /**
- * Utility for 24×7 Continuous Location Tracking in Asia/Kolkata (IST).
+ * Utility for Authorised Location Tracking in Asia/Kolkata (IST).
  *
- * GPS tracking is eligible to run 24 hours a day, 7 days a week,
- * including nights, weekends, holidays, and outside work sessions.
- * Location telemetry is accepted continuously without work-hour restrictions.
+ * Operational schedule: 7:00 AM – 7:00 PM Asia/Kolkata (IST).
+ * Location telemetry and historical trail points are active during this authorized window.
+ * Outside this window, the service enters standby and resumes at 7:00 AM IST.
  */
 object DutyTimeHelper {
 
@@ -20,10 +20,9 @@ object DutyTimeHelper {
     @Volatile
     var testCurrentTimeMillis: Long? = null
 
-    // By default, 24×7 continuous tracking is enabled.
-    // If legacy restricted hours (07:00 AM - 10:00 PM IST) are ever explicitly required:
+    // Enforce authorized tracking window (07:00 AM - 07:00 PM IST) by default
     @Volatile
-    var enforceRestrictedHours: Boolean = false
+    var enforceRestrictedHours: Boolean = true
 
     fun nowMillis(): Long = testCurrentTimeMillis ?: System.currentTimeMillis()
 
@@ -33,14 +32,20 @@ object DutyTimeHelper {
 
     /**
      * Checks whether location tracking is active.
-     * In 24×7 mode, returns true at all times (24 hours a day, 7 days a week).
-     * If enforceRestrictedHours is explicitly set to true, enforces 07:00-22:00 IST.
+     * Enforces the authorised tracking schedule: 7:00 AM–7:00 PM (07:00:00 to 19:00:00), Asia/Kolkata (IST).
      */
     fun isWithinDutyWindow(epochMillis: Long = nowMillis()): Boolean {
         if (!enforceRestrictedHours) return true
         val istTime = getZonedDateTime(epochMillis)
         val hour = istTime.hour
-        return hour in 7..21
+        val minute = istTime.minute
+        val second = istTime.second
+
+        // Active from 07:00:00 AM to strictly 07:00:00 PM (19:00:00) IST
+        if (hour < 7) return false
+        if (hour > 19) return false
+        if (hour == 19 && (minute > 0 || second > 0)) return false
+        return true
     }
 
     /**
