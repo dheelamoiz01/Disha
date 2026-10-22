@@ -79,12 +79,12 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
 
   const shouldUpdateDevicePosition = isInputFresh && !isCoarseDowngrade;
 
-  // 30-minute historical trail recording interval guard:
-  // Persist one historical trail point approximately every 30 minutes (1,800,000 ms).
+  // 1-minute historical trail recording interval guard:
+  // Persist one historical trail point approximately every 1 minute (60,000 ms).
   // Avoid creating duplicate historical records from repeated heartbeats or identical updates within the same interval.
   const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
     ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-    : 27 * 60 * 1000; // 27 minutes default (buffer for 30-minute sampling)
+    : 50 * 1000; // 50 seconds default (buffer for 1-minute sampling)
 
   if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
     const lastRecorded = await prisma.location.findFirst({
@@ -125,7 +125,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           status: "deduplicated",
           locationId: lastRecorded.id,
           receivedAt: new Date(),
-          message: "Latest position updated; historical trail point preserved on 30-minute interval",
+          message: "Latest position updated; historical trail point preserved on 1-minute interval",
         };
       }
     }
@@ -236,7 +236,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
   if (input.locations && input.locations.length > 0) {
     const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
       ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-      : 27 * 60 * 1000; // 27 minutes default (buffer for 30-minute sampling)
+      : 50 * 1000; // 50 seconds default (buffer for 1-minute sampling)
 
     let lastAcceptedTimeMs: number | null = null;
     if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
@@ -270,7 +270,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
           results.locations.push({
             clientEventId: loc.clientEventId,
             status: "deduplicated",
-            message: "Location within 30-minute trail interval deduplicated",
+            message: "Location within 1-minute trail interval deduplicated",
           });
           continue;
         }

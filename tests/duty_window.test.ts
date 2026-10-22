@@ -18,8 +18,8 @@ test("Disha 24/7 Continuous Location Tracking Test Suite", async (t) => {
   let personnel: any;
   let device: any;
 
-  // Enforce 27-minute threshold for 30-minute interval testing
-  process.env.TRAIL_RECORDING_INTERVAL_MS = "1620000";
+  // Enforce 50-second threshold for 1-minute interval testing
+  process.env.TRAIL_RECORDING_INTERVAL_MS = "50000";
 
   await t.test("Setup test fixtures", async () => {
     user = await prisma.user.create({
@@ -122,9 +122,10 @@ test("Disha 24/7 Continuous Location Tracking Test Suite", async (t) => {
     assert.strictEqual(count, 3);
   });
 
-  await t.test("4. 30-minute deduplication: rapid updates within 30 min update Live Map without duplicate row", async () => {
-    // Attempt 10 minutes after t_0200 (600s < 1620s threshold)
-    const t_rapid = new Date("2026-10-21T20:40:00.000Z");
+  await t.test("4. 1-minute deduplication: rapid updates within 1 min update Live Map without duplicate row", async () => {
+    // Attempt 15 seconds after 02:00 (15s < 50s threshold)
+    const t_base = new Date("2026-10-21T20:30:00.000Z");
+    const t_rapid = new Date(t_base.getTime() + 15 * 1000);
     setMockDutyTime(t_rapid);
 
     const res = await ingestSingleLocation(personnel.id, {

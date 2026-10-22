@@ -10,8 +10,8 @@ export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 1000 * 60 * 2; // 2 minutes
 // 75 seconds represents 1 missed heartbeat + 15s network latency buffer.
 export const DEFAULT_HEARTBEAT_STALE_MS = 1000 * 75; // 75 seconds
 
-// 35 minutes for location telemetry freshness (accommodates 30-minute trail recording interval + 5-minute network buffer).
-export const DEFAULT_LOCATION_STALE_MS = 1000 * 60 * 35; // 35 minutes
+// 3 minutes for location telemetry freshness (accommodates 1-minute trail recording interval + 2-minute buffer).
+export const DEFAULT_LOCATION_STALE_MS = 1000 * 60 * 3; // 3 minutes
 
 export function getHeartbeatTimeoutMs(): number {
   const envVal = process.env.HEARTBEAT_TIMEOUT_MS;

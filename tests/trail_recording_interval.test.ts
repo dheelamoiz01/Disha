@@ -9,13 +9,13 @@ import { getStaffLocationTrail } from "../src/services/control-room/trail_servic
 import { getDashboardOverview } from "../src/services/control-room/dashboard_service";
 import { setMockDutyTime } from "../src/lib/utils/duty_window";
 
-test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
+test("1-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   let user: any;
   let personnel: any;
   let device: any;
 
-  // Enforce 27-minute (1,620,000 ms) threshold for 30-minute sampling
-  process.env.TRAIL_RECORDING_INTERVAL_MS = "1620000";
+  // Enforce 50-second (50,000 ms) threshold for 1-minute sampling
+  process.env.TRAIL_RECORDING_INTERVAL_MS = "50000";
 
   const BASE_TIME = new Date("2026-10-20T04:00:00.000Z"); // 09:30 IST
   setMockDutyTime(BASE_TIME);
@@ -33,8 +33,8 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     personnel = await prisma.personnel.create({
       data: {
         userId: user.id,
-        name: "Patrol Officer 30Min",
-        personnelCode: `PC-30M-${Date.now()}`,
+        name: "Patrol Officer 1Min",
+        personnelCode: `PC-1M-${Date.now()}`,
         designation: "Head Constable",
         unit: "Dahod Patrol",
         active: true,
@@ -44,7 +44,7 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     device = await prisma.device.create({
       data: {
         personnelId: personnel.id,
-        deviceIdentifier: `DEV-30M-${Date.now()}`,
+        deviceIdentifier: `DEV-1M-${Date.now()}`,
         platform: "Android",
         status: DeviceStatus.ACTIVE,
       },
@@ -57,7 +57,7 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(session.personnelId, personnel.id);
   });
 
-  await t.test("1. Initial fix (t = 0m) is persisted immediately as anchor point", async () => {
+  await t.test("1. Initial fix (t = 0s) is persisted immediately as anchor point", async () => {
     const t0 = new Date(BASE_TIME.getTime());
     setMockDutyTime(t0);
     const res = await ingestSingleLocation(personnel.id, {
@@ -79,31 +79,31 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(count, 1);
   });
 
-  await t.test("2. Rapid live map updates within interval (t = 5m and t = 15m) are deduplicated, not persisted in historical table", async () => {
-    // Attempt at t = +5 minutes (300s < 1620s)
-    const t5 = new Date(BASE_TIME.getTime() + 5 * 60 * 1000);
-    setMockDutyTime(t5);
+  await t.test("2. Rapid live map updates within interval (t = 10s and t = 25s) are deduplicated, not persisted in historical table", async () => {
+    // Attempt at t = +10s (10s < 50s)
+    const t10 = new Date(BASE_TIME.getTime() + 10 * 1000);
+    setMockDutyTime(t10);
     const res1 = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8340,
       longitude: 74.2565,
       accuracy: 9.5,
-      recordedAt: t5,
+      recordedAt: t10,
       source: "GPS" as any,
       trackingMode: "NORMAL" as any,
       batteryLevel: 94.0,
     });
     assert.strictEqual(res1.status, "deduplicated");
 
-    // Attempt at t = +15 minutes (900s < 1620s)
-    const t15 = new Date(BASE_TIME.getTime() + 15 * 60 * 1000);
-    setMockDutyTime(t15);
+    // Attempt at t = +25s (25s < 50s)
+    const t25 = new Date(BASE_TIME.getTime() + 25 * 1000);
+    setMockDutyTime(t25);
     const res2 = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8345,
       longitude: 74.2570,
       accuracy: 10.0,
-      recordedAt: t15,
+      recordedAt: t25,
       source: "GPS" as any,
       trackingMode: "NORMAL" as any,
       batteryLevel: 93.0,
@@ -120,15 +120,15 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(count, 1);
   });
 
-  await t.test("3. Scheduled fix at t = 30m (1800s >= 1620s) is accepted and persisted as Point 2", async () => {
-    const t30 = new Date(BASE_TIME.getTime() + 30 * 60 * 1000); // 30 minutes later
-    setMockDutyTime(t30);
+  await t.test("3. Scheduled fix at t = 60s (60s >= 50s) is accepted and persisted as Point 2", async () => {
+    const t60 = new Date(BASE_TIME.getTime() + 60 * 1000); // 1 minute later
+    setMockDutyTime(t60);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8360,
       longitude: 74.2580,
       accuracy: 12.0, // Verified <= 20m
-      recordedAt: t30,
+      recordedAt: t60,
       source: "GPS" as any,
       trackingMode: "NORMAL" as any,
       batteryLevel: 92.0,
@@ -141,16 +141,16 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(count, 2);
   });
 
-  await t.test("4. Temporary signal loss (no fix at t=60m); next valid fix at t=90m records honest gap", async () => {
-    // 60 minutes elapsed since Point 2 (t30)
-    const t90 = new Date(BASE_TIME.getTime() + 90 * 60 * 1000);
-    setMockDutyTime(t90);
+  await t.test("4. Temporary signal loss (no fix at t=120s); next valid fix at t=240s records honest gap", async () => {
+    // 3 minutes (180s) elapsed since Point 2 (t60) -> exceeds 3-minute gap threshold
+    const t240 = new Date(BASE_TIME.getTime() + 240 * 1000);
+    setMockDutyTime(t240);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8400,
       longitude: 74.2620,
       accuracy: 14.5, // Verified <= 20m
-      recordedAt: t90,
+      recordedAt: t240,
       source: "GPS" as any,
       trackingMode: "NORMAL" as any,
       batteryLevel: 88.0,
@@ -162,7 +162,7 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(count, 3);
   });
 
-  await t.test("5. Emergency SOS bypasses 30-minute interval gate and persists immediately", async () => {
+  await t.test("5. Emergency SOS bypasses 1-minute interval gate and persists immediately", async () => {
     // Trigger SOS
     await prisma.sOSEvent.create({
       data: {
@@ -170,19 +170,19 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
         personnelId: personnel.id,
         deviceId: device.id,
         status: "ACTIVE",
-        startedAt: new Date(BASE_TIME.getTime() + 90 * 60 * 1000 + 30 * 1000),
+        startedAt: new Date(BASE_TIME.getTime() + 245 * 1000),
       },
     });
 
-    // 30 seconds after t90 (inside the 30-minute window)
-    const t90_30s = new Date(BASE_TIME.getTime() + 90 * 60 * 1000 + 30 * 1000);
-    setMockDutyTime(t90_30s);
+    // 5 seconds after t240 (inside the 1-minute window)
+    const t245 = new Date(BASE_TIME.getTime() + 245 * 1000);
+    setMockDutyTime(t245);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8405,
       longitude: 74.2625,
       accuracy: 7.0,
-      recordedAt: t90_30s,
+      recordedAt: t245,
       source: "GPS" as any,
       trackingMode: "SOS" as any,
     });
@@ -201,15 +201,15 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
   await t.test("6. End duty session - off-duty location tracking continues 24x7", async () => {
     await endDuty(personnel.id, user.id);
 
-    // Next 30-minute fix at t=125m while off duty
-    const t125 = new Date(BASE_TIME.getTime() + 125 * 60 * 1000);
-    setMockDutyTime(t125);
+    // Next 1-minute fix at t=310s (65s after t245) while off duty
+    const t310 = new Date(BASE_TIME.getTime() + 310 * 1000);
+    setMockDutyTime(t310);
     const res = await ingestSingleLocation(personnel.id, {
       clientEventId: randomUUID(),
       latitude: 22.8450,
       longitude: 74.2650,
       accuracy: 6.5,
-      recordedAt: t125,
+      recordedAt: t310,
       source: "GPS" as any,
       trackingMode: "NORMAL" as any,
       batteryLevel: 80.0,
@@ -220,7 +220,7 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(count, 5);
   });
 
-  await t.test("7. Verify Trail analysis service reflects 30-minute sampling and 60-min gap", async () => {
+  await t.test("7. Verify Trail analysis service reflects 1-minute sampling and 3-min gap", async () => {
     const trail = await getStaffLocationTrail(personnel.id, {
       dateStr: "2026-10-20",
     });
@@ -228,17 +228,17 @@ test("30-Minute Location Trail Recording Interval Lifecycle", async (t) => {
     assert.strictEqual(trail.personnel.id, personnel.id);
     assert.strictEqual(trail.locations.length, 5);
 
-    // Point 1 (t=0m) to Point 2 (t=30m) time diff should be ~30 minutes
+    // Point 1 (t=0s) to Point 2 (t=60s) time diff should be 1 minute
     const p0Time = new Date(trail.locations[0].recordedAt).getTime();
     const p1Time = new Date(trail.locations[1].recordedAt).getTime();
     const diffMin = (p1Time - p0Time) / 60000;
-    assert.strictEqual(diffMin, 30);
+    assert.strictEqual(diffMin, 1);
 
-    // Point 2 (t=30m) to Point 3 (t=90m) time diff is 60 minutes -> flagged as a tracking gap (> 35 min)!
+    // Point 2 (t=60s) to Point 3 (t=240s) time diff is 3 minutes -> flagged as a tracking gap (>= 3 min)!
     assert.strictEqual(trail.summary.gapCount, 1);
-    assert.strictEqual(trail.summary.longestGapMinutes, 60);
+    assert.strictEqual(trail.summary.longestGapMinutes, 3);
     assert.strictEqual(trail.trackingGaps.length, 1);
-    assert.strictEqual(trail.trackingGaps[0].durationMinutes, 60);
+    assert.strictEqual(trail.trackingGaps[0].durationMinutes, 3);
 
     // Accuracy ratings verified
     assert.strictEqual(trail.summary.totalPoints, 5);
