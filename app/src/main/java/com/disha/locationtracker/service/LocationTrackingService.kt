@@ -329,9 +329,9 @@ class LocationTrackingService : Service(), LocationListener {
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
-        // 7. 30-Minute Historical Trail Recording & Live Map Telemetry Gate:
+        // 7. 1-Minute Historical Trail Recording & Live Map Telemetry Gate:
         // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix)
-        // - Historical Trail: Persist historical trail point approximately every 30 minutes (1,800,000 ms)
+        // - Historical Trail: Persist historical trail point approximately every 1 minute (60,000 ms)
         val nowElapsed = SystemClock.elapsedRealtime()
         val elapsedSinceLastTrail = nowElapsed - lastTrailRecordedElapsedRealtimeMs
         val isHistoricalDue = isSos || isFirstDutyPoint || (elapsedSinceLastTrail >= trailRecordingIntervalMs)
@@ -340,7 +340,7 @@ class LocationTrackingService : Service(), LocationListener {
         val isLiveDue = isSos || isFirstDutyPoint || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
 
         if (!isLiveDue && !isHistoricalDue) {
-            // Live map position transmitted recently and 30-minute historical interval has not elapsed yet.
+            // Live map position transmitted recently and 1-minute historical interval has not elapsed yet.
             // Live notification and local state are already updated above.
             return
         }
@@ -630,8 +630,8 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_TRACKING = "com.disha.action.STOP_TRACKING"
         const val ACTION_TRIGGER_SOS = "com.disha.action.TRIGGER_SOS"
 
-        // 30-minute trail recording interval (1,800,000 ms)
-        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 30 * 60 * 1000L
+        // 1-minute trail recording interval (60,000 ms)
+        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 1 * 60 * 1000L
         var trailRecordingIntervalMs: Long = DEFAULT_TRAIL_RECORDING_INTERVAL_MS
 
         // Live Map real-time transmission interval (30 seconds)

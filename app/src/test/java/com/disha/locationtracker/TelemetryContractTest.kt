@@ -136,16 +136,16 @@ class TelemetryContractTest {
     }
 
     @Test
-    fun testTrailRecordingIntervalDefaultIs30Minutes() {
-        // Requirement 2: 30-minute location recording interval (1,800,000 ms)
+    fun testTrailRecordingIntervalDefaultIs1Minute() {
+        // 1-minute location recording interval (60,000 ms)
         val intervalMs = com.disha.locationtracker.service.LocationTrackingService.DEFAULT_TRAIL_RECORDING_INTERVAL_MS
-        assertEquals(1_800_000L, intervalMs)
-        assertEquals(30 * 60 * 1000L, intervalMs)
+        assertEquals(60_000L, intervalMs)
+        assertEquals(1 * 60 * 1000L, intervalMs)
     }
 
     @Test
     fun testTrailRecordingIntervalGateLogic() {
-        val intervalMs = 1_800_000L // 30 minutes (1,800,000 ms)
+        val intervalMs = 60_000L // 1 minute (60,000 ms)
         var lastRecordedElapsedMs = 0L
         var isFirstDutyPoint = true
 
@@ -163,25 +163,25 @@ class TelemetryContractTest {
         assertTrue(shouldRecord(0L, isSos = false))
         assertEquals(0L, lastRecordedElapsedMs)
 
-        // t = 30s: Live map fix arrives -> Should NOT record duplicate historical point
+        // t = 15s: Live map fix arrives -> Should NOT record duplicate historical point
+        assertFalse(shouldRecord(15_000L, isSos = false))
+
+        // t = 30s: 30 seconds in -> Should NOT record (within 1-min window)
         assertFalse(shouldRecord(30_000L, isSos = false))
 
-        // t = 300s: 5 minutes in -> Should NOT record (within 30-min window)
-        assertFalse(shouldRecord(300_000L, isSos = false))
+        // t = 59s: 59s -> Should NOT record
+        assertFalse(shouldRecord(59_000L, isSos = false))
 
-        // t = 1,799s: 29m 59s -> Should NOT record
-        assertFalse(shouldRecord(1_799_000L, isSos = false))
+        // t = 60s: 1m 00s -> SHOULD record (1-minute interval elapsed)
+        assertTrue(shouldRecord(60_000L, isSos = false))
+        assertEquals(60_000L, lastRecordedElapsedMs)
 
-        // t = 1,800s: 30m 00s -> SHOULD record (30-minute interval elapsed)
-        assertTrue(shouldRecord(1_800_000L, isSos = false))
-        assertEquals(1_800_000L, lastRecordedElapsedMs)
+        // t = 70s: 10s later -> Should NOT record
+        assertFalse(shouldRecord(70_000L, isSos = false))
 
-        // t = 1,830s: 30s later -> Should NOT record
-        assertFalse(shouldRecord(1_830_000L, isSos = false))
-
-        // t = 1,860s: Emergency SOS triggered -> SHOULD record immediately!
-        assertTrue(shouldRecord(1_860_000L, isSos = true))
-        assertEquals(1_860_000L, lastRecordedElapsedMs)
+        // t = 75s: Emergency SOS triggered -> SHOULD record immediately!
+        assertTrue(shouldRecord(75_000L, isSos = true))
+        assertEquals(75_000L, lastRecordedElapsedMs)
     }
 
     @Test

@@ -106,7 +106,7 @@ class TrackerRepository(
             } else {
                 // Buffer to SQLite on temporary network failure or server 5xx.
                 // To prevent SQLite storage bloat during extended network loss,
-                // buffer points scheduled for 30-minute historical recording, SOS mode, or first offline fix.
+                // buffer points scheduled for 1-minute historical recording, SOS mode, or first offline fix.
                 val nowElapsed = android.os.SystemClock.elapsedRealtime()
                 val elapsedSinceOffline = nowElapsed - lastOfflineBufferedElapsedMs
                 val shouldBuffer = prefs.isSosActive || isHistoricalScheduled || isFirstOfflinePoint ||
