@@ -83,12 +83,12 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
     `[Telemetry Ingestion] Device ${device.deviceIdentifier} (Personnel ${personnelId}): Lat=${input.latitude.toFixed(5)}, Lon=${input.longitude.toFixed(5)}, Acc=±${input.accuracy.toFixed(1)}m, Source=${input.source}, UpdateLive=${shouldUpdateDevicePosition}`
   );
 
-  // 30-second historical trail recording interval guard:
-  // Persist one historical trail point approximately every 30 seconds (30,000 ms).
+  // 10-second historical trail recording interval guard:
+  // Persist one historical trail point approximately every 10 seconds (10,000 ms).
   // Avoid creating duplicate historical records from repeated heartbeats or identical updates within the same interval.
   const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
     ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-    : 25 * 1000; // 25 seconds default (buffer for 30-second sampling)
+    : 8 * 1000; // 8 seconds default (buffer for 10-second sampling)
 
   if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
     const lastRecorded = await prisma.location.findFirst({
@@ -129,7 +129,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           status: "deduplicated",
           locationId: lastRecorded.id,
           receivedAt: new Date(),
-          message: "Latest position updated; historical trail point preserved on 30-second interval",
+          message: "Latest position updated; historical trail point preserved on 10-second interval",
         };
       }
     }
@@ -240,7 +240,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
   if (input.locations && input.locations.length > 0) {
     const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
       ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-      : 25 * 1000; // 25 seconds default (buffer for 30-second sampling)
+      : 8 * 1000; // 8 seconds default (buffer for 10-second sampling)
 
     let lastAcceptedTimeMs: number | null = null;
     if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
@@ -274,7 +274,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
           results.locations.push({
             clientEventId: loc.clientEventId,
             status: "deduplicated",
-            message: "Location within 30-second trail interval deduplicated",
+            message: "Location within 10-second trail interval deduplicated",
           });
           continue;
         }

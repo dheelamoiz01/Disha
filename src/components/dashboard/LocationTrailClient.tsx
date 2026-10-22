@@ -140,6 +140,62 @@ export default function LocationTrailClient({
     }
   }, [selectedPersonnelId, selectedDate, loadTrail]);
 
+  // Independent Dashboard Trail Refresh Interval (10 seconds)
+  const DASHBOARD_TRAIL_REFRESH_INTERVAL_MS = 10_000;
+
+  // Background Live Sync (10 seconds) for Today's Historical Trail
+  useEffect(() => {
+    if (!selectedPersonnelId || !selectedDate) return;
+    // Only auto-refresh if viewing today's route and replay is not actively running
+    if (selectedDate !== getTodayIST() || isPlaying) return;
+
+    let isMounted = true;
+    const intervalId = setInterval(async () => {
+      if (document.hidden) return; // Save bandwidth when tab is backgrounded
+      try {
+        let url = `/api/control-room/personnel/${selectedPersonnelId}/location-history?date=${selectedDate}`;
+        if (selectedDutySessionId) {
+          url += `&dutySessionId=${selectedDutySessionId}`;
+        }
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const freshData: StaffTrailResult = await res.json();
+        if (!isMounted) return;
+
+        setTrailData((prev) => {
+          if (!prev) return freshData;
+          if (
+            prev.locations.length === freshData.locations.length &&
+            prev.locations[prev.locations.length - 1]?.id ===
+              freshData.locations[freshData.locations.length - 1]?.id
+          ) {
+            return prev;
+          }
+          // Ensure chronological ordering and avoid duplicates
+          const existingIds = new Set(prev.locations.map((p) => p.id));
+          const newUniquePoints = freshData.locations.filter((p) => !existingIds.has(p.id));
+          if (newUniquePoints.length === 0) return prev;
+
+          const merged = [...prev.locations, ...newUniquePoints].sort(
+            (a, b) => new Date(a.recordedAt).getTime() - new Date(b.recordedAt).getTime()
+          );
+
+          return {
+            ...freshData,
+            locations: merged,
+          };
+        });
+      } catch (err) {
+        console.error("Live trail refresh error:", err);
+      }
+    }, DASHBOARD_TRAIL_REFRESH_INTERVAL_MS);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, [selectedPersonnelId, selectedDate, selectedDutySessionId, isPlaying]);
+
   const locations = useMemo(() => trailData?.locations || [], [trailData]);
   const activePoint: TrailPoint | null = locations[currentIndex] || null;
 
@@ -271,8 +327,8 @@ export default function LocationTrailClient({
             </button>
           </div>
 
-          {/* Quick Date Pills */}
-          <div className="hidden md:flex items-center gap-1.5">
+          {/* Quick Date Pills & 10s Live Sync Badge */}
+          <div className="hidden md:flex items-center gap-2">
             <button
               type="button"
               onClick={() => setSelectedDate(getTodayIST())}
@@ -284,6 +340,12 @@ export default function LocationTrailClient({
             >
               Today
             </button>
+            {selectedDate === getTodayIST() && (
+              <span className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono font-bold rounded-lg bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 shadow-sm">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                10s LIVE SYNC
+              </span>
+            )}
           </div>
         </div>
       </div>

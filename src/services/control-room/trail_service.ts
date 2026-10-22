@@ -170,7 +170,7 @@ export async function getStaffLocationTrail(
   const rawLocations = await prisma.location.findMany({
     where: whereClause,
     orderBy: { recordedAt: "asc" },
-    take: 5000, // Safe limit covering 14+ hours of 5-sec updates
+    take: 10000, // Safe limit covering 24+ hours of 10-sec updates (up to ~8,640 points per day)
     select: {
       id: true,
       latitude: true,
@@ -212,12 +212,12 @@ export async function getStaffLocationTrail(
       const timeDiffSec =
         (new Date(curr.recordedAt).getTime() - new Date(prev.recordedAt).getTime()) / 1000;
 
-      // Gap detection: gap occurs when elapsed time between recorded fixes exceeds 2 minutes (missed scheduled 30-sec fix + 90s buffer)
+      // Gap detection: gap occurs when elapsed time between recorded fixes exceeds 1 minute (missed scheduled 10-sec fix + 50s buffer)
       if (timeDiffSec > 0) {
         const gapMin = timeDiffSec / 60;
         const gapThresholdMin = process.env.TRACKING_GAP_THRESHOLD_MINUTES
           ? Number(process.env.TRACKING_GAP_THRESHOLD_MINUTES)
-          : 2;
+          : 1;
         if (gapMin >= gapThresholdMin) {
           trackingGaps.push({
             startTime: new Date(prev.recordedAt),

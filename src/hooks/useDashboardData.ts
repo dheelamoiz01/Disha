@@ -35,7 +35,7 @@ export type DashboardPersonnel = {
   activeAlertId: string | null;
 };
 
-export function useDashboardData(intervalMs: number = 5000, initialData?: DashboardPersonnel[]) {
+export function useDashboardData(intervalMs: number = 10000, initialData?: DashboardPersonnel[]) {
   const [data, setData] = useState<DashboardPersonnel[] | null>(initialData || null);
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(!initialData);

@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 
 export default function LiveMapClient({ initialData }: { initialData?: any[] }) {
-  const { data, error, isLoading, lastUpdated } = useDashboardData(5000, initialData);
+  const { data, error, isLoading, lastUpdated } = useDashboardData(10000, initialData);
   const [selectedPersonnelId, setSelectedPersonnelId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileTab, setMobileTab] = useState<"map" | "list" | "alerts">("map");
