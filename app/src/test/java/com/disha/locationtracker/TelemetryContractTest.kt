@@ -185,26 +185,46 @@ class TelemetryContractTest {
     }
 
     @Test
-    fun testDutyTimeHelperAuthorisedTrackingWindow() {
+    fun testDutyTimeHelper24x7TrackingWindow() {
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
         }
 
-        // Tracking schedule: 07:00 AM – 07:00 PM Asia/Kolkata (IST)
-        val t_0659 = isoFormat.parse("2026-10-21T01:29:59.000Z")!!.time // 06:59:59 IST (outside)
-        val t_0700 = isoFormat.parse("2026-10-21T01:30:00.000Z")!!.time // 07:00:00 IST (inside)
-        val t_1200 = isoFormat.parse("2026-10-21T06:30:00.000Z")!!.time // 12:00:00 IST (inside)
-        val t_1859 = isoFormat.parse("2026-10-21T13:29:59.000Z")!!.time // 18:59:59 IST (inside)
-        val t_1900 = isoFormat.parse("2026-10-21T13:30:00.000Z")!!.time // 19:00:00 IST (closed)
-        val t_1901 = isoFormat.parse("2026-10-21T13:31:00.000Z")!!.time // 19:01:00 IST (outside)
-        val t_2230 = isoFormat.parse("2026-10-21T17:00:00.000Z")!!.time // 22:30:00 IST (outside)
+        // Test timestamps in Asia/Kolkata (IST):
+        // 02:00 IST = 20:30 UTC previous day
+        val t_0200 = isoFormat.parse("2026-10-20T20:30:00.000Z")!!.time
+        // 06:00 IST = 00:30 UTC
+        val t_0600 = isoFormat.parse("2026-10-21T00:30:00.000Z")!!.time
+        // 07:00 IST = 01:30 UTC
+        val t_0700 = isoFormat.parse("2026-10-21T01:30:00.000Z")!!.time
+        // 12:00 IST = 06:30 UTC
+        val t_1200 = isoFormat.parse("2026-10-21T06:30:00.000Z")!!.time
+        // 19:00 IST = 13:30 UTC
+        val t_1900 = isoFormat.parse("2026-10-21T13:30:00.000Z")!!.time
+        // 23:00 IST = 17:30 UTC
+        val t_2300 = isoFormat.parse("2026-10-21T17:30:00.000Z")!!.time
+        // 00:01 IST across midnight = 18:31 UTC previous day
+        val t_midnight = isoFormat.parse("2026-10-21T18:31:00.000Z")!!.time
 
-        assertFalse("06:59:59 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0659))
-        assertTrue("07:00:00 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
-        assertTrue("12:00:00 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
-        assertTrue("18:59:59 IST is inside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1859))
-        assertFalse("19:01:00 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1901))
-        assertFalse("22:30:00 IST is outside tracking window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2230))
+        // 1. Default 24×7 Mode: all hours permitted day and night, every day
+        com.disha.locationtracker.util.DutyTimeHelper.enforceRestrictedHours = false
+        assertTrue("02:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0200))
+        assertTrue("06:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0600))
+        assertTrue("07:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
+        assertTrue("12:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
+        assertTrue("19:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1900))
+        assertTrue("23:00 IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2300))
+        assertTrue("Across midnight IST must be active in 24x7 mode", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_midnight))
+
+        // 2. Legacy restricted hours toggle (when explicitly enabled)
+        com.disha.locationtracker.util.DutyTimeHelper.enforceRestrictedHours = true
+        assertFalse("02:00 IST is restricted when restricted hours are enabled", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0200))
+        assertTrue("07:00 IST is inside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_0700))
+        assertTrue("12:00 IST is inside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_1200))
+        assertFalse("23:00 IST is outside restricted window", com.disha.locationtracker.util.DutyTimeHelper.isWithinDutyWindow(t_2300))
+
+        // Reset to default 24×7 mode
+        com.disha.locationtracker.util.DutyTimeHelper.enforceRestrictedHours = false
     }
 
     @Test

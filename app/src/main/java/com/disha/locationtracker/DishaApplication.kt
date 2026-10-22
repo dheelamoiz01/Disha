@@ -9,6 +9,7 @@ import com.disha.locationtracker.data.local.AppPreferences
 import com.disha.locationtracker.data.local.OfflineLocationDbHelper
 import com.disha.locationtracker.data.remote.ApiClient
 import com.disha.locationtracker.data.repository.TrackerRepository
+import com.disha.locationtracker.update.UpdateManager
 
 class DishaApplication : Application() {
 
@@ -24,6 +25,9 @@ class DishaApplication : Application() {
     lateinit var repository: TrackerRepository
         private set
 
+    lateinit var updateManager: UpdateManager
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -32,6 +36,7 @@ class DishaApplication : Application() {
         dbHelper = OfflineLocationDbHelper(this)
         apiClient = ApiClient(prefs)
         repository = TrackerRepository(prefs, dbHelper, apiClient)
+        updateManager = UpdateManager(this, prefs)
 
         createNotificationChannels()
     }

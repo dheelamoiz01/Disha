@@ -20,9 +20,9 @@ object DutyTimeHelper {
     @Volatile
     var testCurrentTimeMillis: Long? = null
 
-    // Enforce authorized tracking window (07:00 AM - 07:00 PM IST) by default
+    // 24×7 Continuous Location Tracking: active around the clock by default (day and night, every day)
     @Volatile
-    var enforceRestrictedHours: Boolean = true
+    var enforceRestrictedHours: Boolean = false
 
     fun nowMillis(): Long = testCurrentTimeMillis ?: System.currentTimeMillis()
 

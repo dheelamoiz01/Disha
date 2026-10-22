@@ -644,7 +644,7 @@ class LocationTrackingService : Service(), LocationListener {
         val title = when {
             prefs.isSosActive -> "DISHA — EMERGENCY SOS ACTIVE"
             !DutyTimeHelper.isWithinDutyWindow() -> "DISHA — Standby"
-            else -> "DISHA Field Tracker — Duty Tracking Active (07:00 AM – 07:00 PM IST)"
+            else -> "DISHA Field Tracker — 24×7 Continuous Tracking Active"
         }
 
         val openActivityIntent = Intent(this, MainActivity::class.java).apply {

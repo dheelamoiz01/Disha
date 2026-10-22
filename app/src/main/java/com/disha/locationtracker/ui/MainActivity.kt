@@ -24,7 +24,10 @@ import com.disha.locationtracker.R
 import com.disha.locationtracker.data.model.LocationTelemetryPayload
 import com.disha.locationtracker.databinding.ActivityMainBinding
 import com.disha.locationtracker.databinding.DialogConsentBinding
+import com.disha.locationtracker.databinding.DialogAppUpdateBinding
 import com.disha.locationtracker.service.LocationTrackingService
+import com.disha.locationtracker.update.DownloadProgressState
+import com.disha.locationtracker.update.ReleaseInfo
 import com.disha.locationtracker.util.DutyTimeHelper
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.LocationRequest
@@ -42,8 +45,12 @@ class MainActivity : AppCompatActivity() {
     private val prefs by lazy { DishaApplication.instance.prefs }
     private val repository by lazy { DishaApplication.instance.repository }
     private val apiClient by lazy { DishaApplication.instance.apiClient }
+    private val updateManager by lazy { DishaApplication.instance.updateManager }
 
     private var hasReceivedLocationFix = false
+    private var updateDialog: AlertDialog? = null
+    private var isUpdateCheckInProgress = false
+    private var lastUpdateCheckTime = 0L
 
     private val locationSettingsLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -109,6 +116,7 @@ class MainActivity : AppCompatActivity() {
         setupLocationObservers()
         checkTrackingDisclosure()
         requestInitialPermissions()
+        checkForAppUpdate(isManual = false)
     }
 
     override fun onResume() {
@@ -119,6 +127,10 @@ class MainActivity : AppCompatActivity() {
         startContinuousTrackingIfReady()
         updateOperationalState()
         repository.refreshPendingCount()
+
+        if (System.currentTimeMillis() - lastUpdateCheckTime > 5 * 60 * 1000L) {
+            checkForAppUpdate(isManual = false)
+        }
     }
 
     private fun checkDeviceLocationSettings() {
@@ -417,7 +429,7 @@ class MainActivity : AppCompatActivity() {
                     binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.success))
 
                     binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.success))
-                    binding.trackingStatusText.text = "GPS Tracking Active • ≤20m verified satellite fixes"
+                    binding.trackingStatusText.text = "24×7 GPS Tracking Active • ≤20m verified satellite fixes"
                     binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.success))
                 }
 
@@ -598,5 +610,140 @@ class MainActivity : AppCompatActivity() {
                     .show()
             }
         }
+    }
+
+    private fun checkForAppUpdate(isManual: Boolean = false) {
+        if (isUpdateCheckInProgress) return
+        isUpdateCheckInProgress = true
+        lastUpdateCheckTime = System.currentTimeMillis()
+
+        lifecycleScope.launch {
+            try {
+                val result = updateManager.checkForUpdate()
+                if (result.isSuccess) {
+                    val update = result.getOrNull()
+                    if (update != null && update.updateAvailable && update.latestRelease != null) {
+                        showUpdateDialog(update.latestRelease)
+                    } else if (isManual) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "App is up to date (v${updateManager.getCurrentVersionName()})",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                } else if (isManual) {
+                    val err = result.exceptionOrNull()?.message ?: "Check failed"
+                    Toast.makeText(this@MainActivity, "Update check failed: $err", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                if (isManual) {
+                    Toast.makeText(this@MainActivity, "Update error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                isUpdateCheckInProgress = false
+            }
+        }
+    }
+
+    private fun showUpdateDialog(release: ReleaseInfo) {
+        if (isFinishing || isDestroyed) return
+        if (updateDialog?.isShowing == true) return
+
+        val dialogBinding = DialogAppUpdateBinding.inflate(layoutInflater)
+
+        dialogBinding.updateTitle.text = "Software Update Available"
+        dialogBinding.versionSubtitle.text = "Version ${release.versionName} (Code ${release.versionCode}) • Current: v${updateManager.getCurrentVersionName()}"
+        dialogBinding.releaseNotesText.text = release.releaseNotes
+
+        if (release.isMandatory) {
+            dialogBinding.updatePolicyBadge.visibility = View.VISIBLE
+            dialogBinding.updatePolicyBadge.text = "CRITICAL MANDATORY UPDATE"
+            dialogBinding.laterButton.visibility = View.GONE
+        } else {
+            dialogBinding.updatePolicyBadge.visibility = View.GONE
+            dialogBinding.laterButton.visibility = View.VISIBLE
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogBinding.root)
+            .setCancelable(!release.isMandatory)
+            .create()
+
+        if (release.isMandatory) {
+            dialog.setCanceledOnTouchOutside(false)
+        }
+
+        dialogBinding.laterButton.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialogBinding.updateButton.setOnClickListener {
+            dialogBinding.updateButton.isEnabled = false
+            dialogBinding.laterButton.isEnabled = false
+            dialogBinding.progressSection.visibility = View.VISIBLE
+            dialogBinding.downloadProgressBar.isIndeterminate = false
+            dialogBinding.downloadProgressBar.progress = 0
+            dialogBinding.progressStatusText.text = "Connecting to server..."
+
+            lifecycleScope.launch {
+                val downloadResult = updateManager.downloadAndVerifyApk(release) { state ->
+                    runOnUiThread {
+                        when (state) {
+                            is DownloadProgressState.Downloading -> {
+                                if (state.totalBytes > 0) {
+                                    dialogBinding.downloadProgressBar.isIndeterminate = false
+                                    dialogBinding.downloadProgressBar.progress = state.progressPercent
+                                    val downloadedMb = state.bytesDownloaded / (1024.0 * 1024.0)
+                                    val totalMb = state.totalBytes / (1024.0 * 1024.0)
+                                    dialogBinding.progressStatusText.text = "Downloading: ${state.progressPercent}% (%.1f MB / %.1f MB)".format(Locale.US, downloadedMb, totalMb)
+                                } else {
+                                    dialogBinding.downloadProgressBar.isIndeterminate = true
+                                    val downloadedMb = state.bytesDownloaded / (1024.0 * 1024.0)
+                                    dialogBinding.progressStatusText.text = "Downloading: %.1f MB".format(Locale.US, downloadedMb)
+                                }
+                            }
+                            is DownloadProgressState.VerifyingChecksum -> {
+                                dialogBinding.downloadProgressBar.isIndeterminate = true
+                                dialogBinding.progressStatusText.text = "Verifying SHA-256 cryptographic checksum..."
+                            }
+                            is DownloadProgressState.ReadyToInstall -> {
+                                dialogBinding.downloadProgressBar.isIndeterminate = false
+                                dialogBinding.downloadProgressBar.progress = 100
+                                dialogBinding.progressStatusText.text = "Verification passed! Launching installer..."
+                            }
+                            is DownloadProgressState.Error -> {
+                                dialogBinding.downloadProgressBar.isIndeterminate = false
+                                dialogBinding.progressStatusText.text = "Error: ${state.message}"
+                                dialogBinding.updateButton.isEnabled = true
+                                dialogBinding.updateButton.text = "Retry"
+                                if (!release.isMandatory) {
+                                    dialogBinding.laterButton.isEnabled = true
+                                }
+                            }
+                            else -> Unit
+                        }
+                    }
+                }
+
+                if (downloadResult.isSuccess) {
+                    val apkFile = downloadResult.getOrNull()
+                    if (apkFile != null) {
+                        if (!updateManager.canRequestPackageInstalls()) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Please grant permission to install updates",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            updateManager.requestInstallPermission(this@MainActivity)
+                        } else {
+                            updateManager.launchApkInstaller(this@MainActivity, apkFile)
+                        }
+                    }
+                }
+            }
+        }
+
+        updateDialog = dialog
+        dialog.show()
     }
 }
