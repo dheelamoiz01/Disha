@@ -212,12 +212,12 @@ export async function getStaffLocationTrail(
       const timeDiffSec =
         (new Date(curr.recordedAt).getTime() - new Date(prev.recordedAt).getTime()) / 1000;
 
-      // Gap detection: gap occurs when elapsed time between recorded fixes exceeds 3 minutes (missed scheduled 1-minute fix + 2 min buffer)
+      // Gap detection: gap occurs when elapsed time between recorded fixes exceeds 2 minutes (missed scheduled 30-sec fix + 90s buffer)
       if (timeDiffSec > 0) {
         const gapMin = timeDiffSec / 60;
         const gapThresholdMin = process.env.TRACKING_GAP_THRESHOLD_MINUTES
           ? Number(process.env.TRACKING_GAP_THRESHOLD_MINUTES)
-          : 3;
+          : 2;
         if (gapMin >= gapThresholdMin) {
           trackingGaps.push({
             startTime: new Date(prev.recordedAt),

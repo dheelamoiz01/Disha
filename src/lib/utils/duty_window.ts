@@ -48,13 +48,15 @@ export function getISTTimeParts(date: Date): ISTTimeParts {
 }
 
 /**
- * In 24×7 tracking mode, location tracking runs 24 hours a day, 7 days a week.
- * Returns true continuously unless legacy ENFORCE_RESTRICTED_HOURS is explicitly configured.
+ * Checks if a timestamp falls within the authorised tracking schedule (07:00 AM – 07:00 PM IST).
  */
 export function isWithinDutyWindowIST(date: Date): boolean {
-  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1" || (!process.env.DISABLE_DUTY_HOURS && process.env.NODE_ENV === "production")) {
     const parts = getISTTimeParts(date);
-    return parts.hour >= 7 && parts.hour < 22;
+    if (parts.hour < 7) return false;
+    if (parts.hour > 19) return false;
+    if (parts.hour === 19 && (parts.minute > 0 || parts.second > 0)) return false;
+    return true;
   }
   return true;
 }
@@ -84,20 +86,20 @@ export function validateTelemetryDutyWindow(
   recordedAt: Date,
   serverNow: Date = getDutyCurrentTime()
 ): DutyValidationResult {
-  // If restricted hours are explicitly requested via env variable
-  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
+  // If restricted hours are explicitly requested or running in production
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1" || (!process.env.DISABLE_DUTY_HOURS && process.env.NODE_ENV === "production")) {
     if (!isWithinDutyWindowIST(serverNow)) {
       return {
         permitted: false,
         code: "DUTY_WINDOW_CLOSED",
-        reason: "Server tracking window closed (07:00 AM to 10:00 PM IST restricted mode enabled).",
+        reason: "Server tracking window closed (07:00 AM to 07:00 PM IST authorised window).",
       };
     }
     if (!isWithinDutyWindowIST(recordedAt)) {
       return {
         permitted: false,
         code: "DUTY_WINDOW_CLOSED",
-        reason: "Location recorded outside restricted hours window.",
+        reason: "Location recorded outside authorised tracking window (07:00 AM to 07:00 PM IST).",
       };
     }
   }

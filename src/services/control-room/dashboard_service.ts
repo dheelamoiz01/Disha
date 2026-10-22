@@ -213,7 +213,7 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
 
     if (!isDutyHours) {
       trackingStatus = "OUTSIDE DUTY HOURS";
-      statusReason = "Outside permitted duty window (07:00 AM – 10:00 PM IST)";
+      statusReason = "Outside permitted duty window (07:00 AM – 07:00 PM IST)";
     } else if (isDeviceSignedOut) {
       trackingStatus = "TRACKING INTERRUPTED";
       statusReason = "Device is signed out or inactive";
