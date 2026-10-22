@@ -79,6 +79,10 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
 
   const shouldUpdateDevicePosition = isInputFresh && !isCoarseDowngrade;
 
+  console.log(
+    `[Telemetry Ingestion] Device ${device.deviceIdentifier} (Personnel ${personnelId}): Lat=${input.latitude.toFixed(5)}, Lon=${input.longitude.toFixed(5)}, Acc=±${input.accuracy.toFixed(1)}m, Source=${input.source}, UpdateLive=${shouldUpdateDevicePosition}`
+  );
+
   // 30-second historical trail recording interval guard:
   // Persist one historical trail point approximately every 30 seconds (30,000 ms).
   // Avoid creating duplicate historical records from repeated heartbeats or identical updates within the same interval.
@@ -318,6 +322,9 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       );
       const isNewer = !device.latestLocationTime || new Date(latestBatchLoc.recordedAt) >= new Date(device.latestLocationTime);
       if (isNewer) {
+        console.log(
+          `[Batch Ingestion] Device ${device.deviceIdentifier}: Updating latest position -> Lat=${latestBatchLoc.latitude.toFixed(5)}, Lon=${latestBatchLoc.longitude.toFixed(5)}, Acc=±${latestBatchLoc.accuracy.toFixed(1)}m, Source=${latestBatchLoc.source}`
+        );
         await prisma.device.update({
           where: { id: device.id },
           data: {
