@@ -266,12 +266,10 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
 
     // Determine locationStatus (for backward compatibility and live map filters):
     let locationStatus = "LOCATION UNAVAILABLE";
-    if (!activeDuty) {
-      locationStatus = "OFF DUTY";
-    } else if (!isDutyHours) {
-      locationStatus = "STALE";
-    } else if (trackingStatus === "GPS ACTIVE" || trackingStatus === "NETWORK LOCATION") {
+    if (trackingStatus === "GPS ACTIVE" || trackingStatus === "NETWORK LOCATION") {
       locationStatus = "TRACKING ACTIVE";
+    } else if (!activeDuty) {
+      locationStatus = "OFF DUTY";
     } else if (trackingStatus === "STALE / OFFLINE") {
       locationStatus = "STALE";
     } else {
@@ -306,7 +304,7 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
       personnelCode: p.personnelCode,
       designation: p.designation,
       unit: p.unit,
-      dutyStatus: activeDuty && isDutyHours ? "ON DUTY" : "OFF DUTY",
+      dutyStatus: activeDuty ? "ON DUTY" : "OFF DUTY",
       locationStatus,
       trackingStatus,
       statusReason,

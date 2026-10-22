@@ -350,7 +350,7 @@ test("API Route Handlers: Authentication and Authorization Verification", async 
             latitude: 22.8333,
             longitude: 74.2562,
             accuracy: 8.5,
-            recordedAt: new Date().toISOString(),
+            recordedAt: new Date(Date.now() - 35 * 60 * 1000).toISOString(),
             source: "GPS",
             trackingMode: "NORMAL",
             batteryLevel: 90,

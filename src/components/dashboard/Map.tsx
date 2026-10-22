@@ -343,7 +343,7 @@ export default function MapComponent({ data, selectedId, onMarkerClick, classNam
           const isSOS = p.sosStatus === "SOS ACTIVE";
           const isSelected = p.id === selectedId;
           const isStale = p.locationStatus === "STALE";
-          const isOffline = p.networkStatus === "OFFLINE" || p.dutyStatus === "OFF DUTY";
+          const isOffline = p.networkStatus === "OFFLINE";
           const isNetwork = loc.source === "NETWORK" || p.trackingStatus === "NETWORK LOCATION";
           const isLocOff = p.trackingStatus === "LOCATION OFF";
           const isPermDenied = p.trackingStatus === "PERMISSION DENIED";

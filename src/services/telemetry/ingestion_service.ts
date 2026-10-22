@@ -6,11 +6,7 @@ import { logAudit } from "@/lib/auth/audit";
 import {
   getDutyCurrentTime,
   validateTelemetryDutyWindow,
-  isWithinDutyWindowIST,
-  isSameDayIST,
-  getISTTimeParts,
 } from "@/lib/utils/duty_window";
-import { getISTDayRange } from "@/lib/utils/time";
 
 export class TelemetryError extends Error {
   constructor(message: string, public code: string) {
@@ -53,7 +49,7 @@ export async function validateDeviceAuthorization(personnelId: string) {
 }
 
 export async function ingestSingleLocation(personnelId: string, input: SingleLocationInput) {
-  // 1. Mandatory Server-Side Duty Window Enforcement (07:00 AM - 10:00 PM IST)
+  // 1. 24×7 Location Telemetry Ingestion (Validation for timestamp sanity and future skew)
   const serverNow = getDutyCurrentTime();
   const dutyValidation = validateTelemetryDutyWindow(new Date(input.recordedAt), serverNow);
   if (!dutyValidation.permitted) {
@@ -62,79 +58,8 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
 
   const { device, session } = await validateDeviceAuthorization(personnelId);
 
-  // 2. Multi-day duty session rollover:
-  // If an active session exists from a previous calendar day (left open overnight),
-  // close it cleanly at yesterday's 22:00 IST, and automatically roll over to a fresh
-  // daily session for today without requiring the worker to toggle anything.
-  let activeDutySession = session;
-  if (activeDutySession) {
-    const isToday = isSameDayIST(new Date(activeDutySession.startedAt), serverNow);
-    if (!isToday) {
-      const parts = getISTTimeParts(new Date(activeDutySession.startedAt));
-      const oldRange = getISTDayRange(
-        `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`
-      );
-      const cappedEnd = new Date(oldRange.startTime.getTime() + 22 * 3600 * 1000);
-      await prisma.dutySession.update({
-        where: { id: activeDutySession.id },
-        data: {
-          endedAt: activeDutySession.startedAt > cappedEnd ? activeDutySession.startedAt : cappedEnd,
-          status: DutyStatus.DUTY_ENDED,
-        },
-      });
-
-      // Roll over to today's active duty session
-      if (isWithinDutyWindowIST(serverNow)) {
-        try {
-          activeDutySession = await prisma.dutySession.create({
-            data: {
-              personnelId,
-              deviceId: device.id,
-              status: DutyStatus.DUTY_STARTED,
-              startedAt: input.recordedAt ? new Date(input.recordedAt) : serverNow,
-            },
-          });
-        } catch {
-          activeDutySession = await getActiveDutySession(personnelId);
-        }
-      } else {
-        activeDutySession = null;
-      }
-    }
-  } else if (
-    process.env.DISABLE_DUTY_WINDOW !== "1" &&
-    isWithinDutyWindowIST(serverNow)
-  ) {
-    // If worker has not already manually ended duty today, automatically initiate
-    // the day's active duty session at 07:00 AM IST without requiring manual intervention.
-    const todayEndedSession = await prisma.dutySession.findFirst({
-      where: {
-        personnelId,
-        endedAt: { not: null },
-      },
-      orderBy: { endedAt: "desc" },
-    });
-
-    const hasEndedToday =
-      todayEndedSession &&
-      todayEndedSession.endedAt &&
-      isSameDayIST(new Date(todayEndedSession.endedAt), serverNow);
-
-    if (!hasEndedToday) {
-      try {
-        activeDutySession = await prisma.dutySession.create({
-          data: {
-            personnelId,
-            deviceId: device.id,
-            status: DutyStatus.DUTY_STARTED,
-            startedAt: input.recordedAt ? new Date(input.recordedAt) : serverNow,
-          },
-        });
-      } catch {
-        activeDutySession = await getActiveDutySession(personnelId);
-      }
-    }
-  }
+  // Link active duty session if one is currently open (for session-specific analytics)
+  const activeDutySession = session;
 
   const activeSOS = await prisma.sOSEvent.findFirst({
     where: { personnelId, endedAt: null, status: "ACTIVE" }
@@ -154,18 +79,17 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
 
   const shouldUpdateDevicePosition = isInputFresh && !isCoarseDowngrade;
 
-  // 5-minute historical trail recording interval guard:
-  // While on active duty, persist one historical trail point approximately every 5 minutes.
+  // 30-minute historical trail recording interval guard:
+  // Persist one historical trail point approximately every 30 minutes (1,800,000 ms).
   // Avoid creating duplicate historical records from repeated heartbeats or identical updates within the same interval.
   const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
     ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-    : 4.5 * 60 * 1000; // 4.5 minutes default (270s buffer for 5-minute sampling)
+    : 27 * 60 * 1000; // 27 minutes default (buffer for 30-minute sampling)
 
-  if (activeDutySession && actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
+  if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
     const lastRecorded = await prisma.location.findFirst({
       where: {
         personnelId,
-        dutySessionId: activeDutySession.id,
       },
       orderBy: { recordedAt: "desc" },
       select: { id: true, recordedAt: true },
@@ -201,7 +125,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           status: "deduplicated",
           locationId: lastRecorded.id,
           receivedAt: new Date(),
-          message: "Latest position updated; historical trail point preserved on 5-minute interval",
+          message: "Latest position updated; historical trail point preserved on 30-minute interval",
         };
       }
     }
@@ -296,59 +220,8 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
   const { device, session } = await validateDeviceAuthorization(personnelId);
   const serverNow = getDutyCurrentTime();
 
-  let activeDutySession = session;
-  if (activeDutySession) {
-    const isToday = isSameDayIST(new Date(activeDutySession.startedAt), serverNow);
-    if (!isToday) {
-      const parts = getISTTimeParts(new Date(activeDutySession.startedAt));
-      const oldRange = getISTDayRange(
-        `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`
-      );
-      const cappedEnd = new Date(oldRange.startTime.getTime() + 22 * 3600 * 1000);
-      await prisma.dutySession.update({
-        where: { id: activeDutySession.id },
-        data: {
-          endedAt: activeDutySession.startedAt > cappedEnd ? activeDutySession.startedAt : cappedEnd,
-          status: DutyStatus.DUTY_ENDED,
-        },
-      });
-      activeDutySession = null;
-    }
-  }
-
-  if (
-    !activeDutySession &&
-    process.env.DISABLE_DUTY_WINDOW !== "1" &&
-    isWithinDutyWindowIST(serverNow)
-  ) {
-    const todayEndedSession = await prisma.dutySession.findFirst({
-      where: {
-        personnelId,
-        endedAt: { not: null },
-      },
-      orderBy: { endedAt: "desc" },
-    });
-
-    const hasEndedToday =
-      todayEndedSession &&
-      todayEndedSession.endedAt &&
-      isSameDayIST(new Date(todayEndedSession.endedAt), serverNow);
-
-    if (!hasEndedToday) {
-      try {
-        activeDutySession = await prisma.dutySession.create({
-          data: {
-            personnelId,
-            deviceId: device.id,
-            status: DutyStatus.DUTY_STARTED,
-            startedAt: serverNow,
-          },
-        });
-      } catch {
-        activeDutySession = await getActiveDutySession(personnelId);
-      }
-    }
-  }
+  // Link active duty session if one is currently open (for session-specific analytics)
+  const activeDutySession = session;
 
   const activeSOS = await prisma.sOSEvent.findFirst({
     where: { personnelId, endedAt: null, status: "ACTIVE" }
@@ -363,12 +236,12 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
   if (input.locations && input.locations.length > 0) {
     const intervalThresholdMs = process.env.TRAIL_RECORDING_INTERVAL_MS !== undefined
       ? Number(process.env.TRAIL_RECORDING_INTERVAL_MS)
-      : 4.5 * 60 * 1000;
+      : 27 * 60 * 1000; // 27 minutes default (buffer for 30-minute sampling)
 
     let lastAcceptedTimeMs: number | null = null;
-    if (activeDutySession && actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
+    if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
       const lastInDb = await prisma.location.findFirst({
-        where: { personnelId, dutySessionId: activeDutySession.id },
+        where: { personnelId },
         orderBy: { recordedAt: "desc" },
         select: { recordedAt: true },
       });
@@ -378,7 +251,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
     }
 
     for (const loc of input.locations) {
-      // Mandatory duty window check
+      // 24×7 Telemetry validation
       const dutyValidation = validateTelemetryDutyWindow(new Date(loc.recordedAt), serverNow);
       if (!dutyValidation.permitted) {
         results.locations.push({
@@ -390,14 +263,14 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
         continue;
       }
 
-      if (activeDutySession && actualTrackingMode !== "SOS" && intervalThresholdMs > 0 && lastAcceptedTimeMs != null) {
+      if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0 && lastAcceptedTimeMs != null) {
         const pointTimeMs = new Date(loc.recordedAt).getTime();
         const diffMs = Math.abs(pointTimeMs - lastAcceptedTimeMs);
         if (diffMs < intervalThresholdMs) {
           results.locations.push({
             clientEventId: loc.clientEventId,
             status: "deduplicated",
-            message: "Location within 5-minute trail interval deduplicated",
+            message: "Location within 30-minute trail interval deduplicated",
           });
           continue;
         }
@@ -429,6 +302,33 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
         } else {
           results.locations.push({ clientEventId: loc.clientEventId, status: "error", error: (err as any)?.message });
         }
+      }
+    }
+
+    // Update device position to newest valid location in batch so Live Map reflects freshest position
+    const validLocs = input.locations.filter((l) =>
+      results.locations.some(
+        (r) => r.clientEventId === l.clientEventId && (r.status === "accepted" || r.status === "deduplicated")
+      )
+    );
+    if (validLocs.length > 0) {
+      const latestBatchLoc = validLocs.reduce(
+        (latest, curr) => (new Date(curr.recordedAt) > new Date(latest.recordedAt) ? curr : latest),
+        validLocs[0]
+      );
+      const isNewer = !device.latestLocationTime || new Date(latestBatchLoc.recordedAt) >= new Date(device.latestLocationTime);
+      if (isNewer) {
+        await prisma.device.update({
+          where: { id: device.id },
+          data: {
+            latestLatitude: latestBatchLoc.latitude,
+            latestLongitude: latestBatchLoc.longitude,
+            latestAccuracy: latestBatchLoc.accuracy,
+            latestLocationTime: new Date(latestBatchLoc.recordedAt),
+            latestSource: latestBatchLoc.source,
+            lastHeartbeatAt: serverNow,
+          },
+        });
       }
     }
   }

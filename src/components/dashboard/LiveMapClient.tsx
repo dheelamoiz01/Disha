@@ -31,7 +31,7 @@ export default function LiveMapClient({ initialData }: { initialData?: any[] }) 
   const stats = useMemo(() => {
     return {
       total: personnelList.length,
-      trackingActive: personnelList.filter((d) => d.dutyStatus === "ON DUTY" && d.locationStatus === "TRACKING ACTIVE").length,
+      trackingActive: personnelList.filter((d) => d.locationStatus === "TRACKING ACTIVE").length,
       onDuty: personnelList.filter((d) => d.dutyStatus === "ON DUTY").length,
       offDuty: personnelList.filter((d) => d.dutyStatus === "OFF DUTY").length,
       sosActive: personnelList.filter((d) => d.sosStatus === "SOS ACTIVE").length,

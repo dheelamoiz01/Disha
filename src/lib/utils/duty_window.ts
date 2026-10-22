@@ -1,8 +1,9 @@
 /**
- * Asia/Kolkata (IST) Duty Window Utilities
+ * Asia/Kolkata (IST) 24×7 Location Tracking & Duty Window Utilities
  *
- * Enforces business duty window: 07:00:00.000 AM to 10:00:00.000 PM IST (Asia/Kolkata).
- * Outside 07:00–22:00 IST, location uploads and trail persistence are blocked.
+ * GPS tracking is eligible to run 24 hours a day, 7 days a week, including
+ * nights, weekends, holidays, and outside work sessions.
+ * Location telemetry is accepted at any time without work-hour restrictions.
  */
 
 import { TelemetryError } from "@/services/telemetry/ingestion_service";
@@ -32,7 +33,6 @@ export interface ISTTimeParts {
  * Extracts date and time components strictly in Asia/Kolkata timezone (UTC +05:30).
  */
 export function getISTTimeParts(date: Date): ISTTimeParts {
-  // Asia/Kolkata is UTC +05:30 (330 minutes)
   const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
   const istDate = new Date(date.getTime() + IST_OFFSET_MS);
 
@@ -48,15 +48,15 @@ export function getISTTimeParts(date: Date): ISTTimeParts {
 }
 
 /**
- * Checks whether a given timestamp falls strictly within the permitted duty window:
- * 07:00:00.000 AM to 09:59:59.999 PM IST (hour in [7..21]).
- * At 22:00:00 (10:00 PM), returns false.
- * Before 07:00:00 (07:00 AM), returns false.
+ * In 24×7 tracking mode, location tracking runs 24 hours a day, 7 days a week.
+ * Returns true continuously unless legacy ENFORCE_RESTRICTED_HOURS is explicitly configured.
  */
 export function isWithinDutyWindowIST(date: Date): boolean {
-  if (process.env.DISABLE_DUTY_WINDOW === "1") return true;
-  const parts = getISTTimeParts(date);
-  return parts.hour >= 7 && parts.hour < 22;
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
+    const parts = getISTTimeParts(date);
+    return parts.hour >= 7 && parts.hour < 22;
+  }
+  return true;
 }
 
 /**
@@ -75,37 +75,37 @@ export interface DutyValidationResult {
 }
 
 /**
- * Validates whether location telemetry ingestion is permitted based on:
- * 1. Server-side time in Asia/Kolkata (must be within 07:00 to 22:00 IST).
- * 2. Location recorded timestamp in Asia/Kolkata (must be within 07:00 to 22:00 IST).
- * 3. Future-dating protection: Cannot be more than 2 minutes into the future.
- * 4. Stale/Delayed queue protection: Cannot accept overnight or stale fixes older than 15 minutes.
+ * Validates whether location telemetry ingestion is permitted:
+ * 1. 24×7 Tracking: Telemetry is accepted around the clock without work-hour restrictions.
+ * 2. Future-dating protection: Cannot be more than 5 minutes into the future (clock drift protection).
+ * 3. Stale buffer protection: Rejects telemetry older than maximum acceptable tolerance (7 days).
  */
 export function validateTelemetryDutyWindow(
   recordedAt: Date,
   serverNow: Date = getDutyCurrentTime()
 ): DutyValidationResult {
-  // 1. Server time check
-  if (!isWithinDutyWindowIST(serverNow)) {
-    return {
-      permitted: false,
-      code: "DUTY_WINDOW_CLOSED",
-      reason: "Server duty window closed. Location tracking is permitted only between 07:00 AM and 10:00 PM IST.",
-    };
+  // If restricted hours are explicitly requested via env variable
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
+    if (!isWithinDutyWindowIST(serverNow)) {
+      return {
+        permitted: false,
+        code: "DUTY_WINDOW_CLOSED",
+        reason: "Server tracking window closed (07:00 AM to 10:00 PM IST restricted mode enabled).",
+      };
+    }
+    if (!isWithinDutyWindowIST(recordedAt)) {
+      return {
+        permitted: false,
+        code: "DUTY_WINDOW_CLOSED",
+        reason: "Location recorded outside restricted hours window.",
+      };
+    }
   }
 
-  // 2. Client fix timestamp check
-  if (!isWithinDutyWindowIST(recordedAt)) {
-    return {
-      permitted: false,
-      code: "DUTY_WINDOW_CLOSED",
-      reason: "Location recorded outside duty window (07:00 AM to 10:00 PM IST). Overnight points are discarded.",
-    };
-  }
-
-  // 3. Reject future-dated points (> 2 minutes skew)
+  // 1. Reject future-dated points (> 5 minutes skew tolerance)
   const skewMs = recordedAt.getTime() - serverNow.getTime();
-  if (skewMs > 2 * 60 * 1000) {
+  const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+  if (skewMs > MAX_FUTURE_SKEW_MS) {
     return {
       permitted: false,
       code: "FUTURE_TIMESTAMP",
@@ -113,24 +113,14 @@ export function validateTelemetryDutyWindow(
     };
   }
 
-  // 4. Stale / delayed buffer protection:
-  // Points cannot be older than 15 minutes or from a previous day.
-  // Prevents queuing overnight data and dumping it at 07:00 AM.
+  // 2. Reject stale records beyond 7 days tolerance
   const ageMs = serverNow.getTime() - recordedAt.getTime();
-  const MAX_DELAY_MS = 15 * 60 * 1000; // 15 minutes
-  if (ageMs > MAX_DELAY_MS) {
+  const MAX_PAST_TOLERANCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days past
+  if (ageMs > MAX_PAST_TOLERANCE_MS) {
     return {
       permitted: false,
       code: "TIMESTAMP_STALE",
-      reason: "Location timestamp is older than 15 minutes. Delayed overnight queuing is not permitted.",
-    };
-  }
-
-  if (!isSameDayIST(recordedAt, serverNow)) {
-    return {
-      permitted: false,
-      code: "TIMESTAMP_STALE",
-      reason: "Location timestamp is from a previous calendar day.",
+      reason: "Location timestamp is older than 7 days.",
     };
   }
 
