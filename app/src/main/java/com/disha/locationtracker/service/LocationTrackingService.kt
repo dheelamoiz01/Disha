@@ -447,9 +447,9 @@ class LocationTrackingService : Service(), LocationListener {
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
-        // 7. 30-Second Historical Trail Recording & Live Map Telemetry Gate:
-        // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix / accuracy upgrade)
-        // - Historical Trail: Persist historical trail point approximately every 30 seconds (30,000 ms)
+        // 7. 10-Second Historical Trail Recording & Live Map Telemetry Gate:
+        // - Live Map: Update real-time position on the admin dashboard every ~10 seconds (or on SOS / first fix / accuracy upgrade)
+        // - Historical Trail: Persist historical trail point approximately every 10 seconds (10,000 ms)
         val nowElapsed = SystemClock.elapsedRealtime()
         val elapsedSinceLastTrail = nowElapsed - lastTrailRecordedElapsedRealtimeMs
         val isHistoricalDue = isSos || isFirstDutyPoint || (elapsedSinceLastTrail >= trailRecordingIntervalMs)
@@ -754,25 +754,24 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_TRACKING = "com.disha.action.STOP_TRACKING"
         const val ACTION_TRIGGER_SOS = "com.disha.action.TRIGGER_SOS"
 
-        // 30-second trail recording interval (30,000 ms)
-        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 30 * 1000L
+        // 10-second trail recording interval (10,000 ms)
+        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 10 * 1000L
         var trailRecordingIntervalMs: Long = DEFAULT_TRAIL_RECORDING_INTERVAL_MS
 
-        // Live Map real-time transmission interval (30 seconds)
-        const val LIVE_TRANSMISSION_INTERVAL_MS = 30_000L
+        // Live Map real-time transmission interval (10 seconds)
+        const val LIVE_TRANSMISSION_INTERVAL_MS = 10_000L
 
         // Fused Location request intervals:
-        // Sample location with responsive frequency so GNSS hardware stays warm and achieves high accuracy (similar to Google Maps),
-        // while server live transmission and historical database writes remain strictly on the required 30-second schedule.
-        private const val LOCATION_INTERVAL_MS = 10_000L
-        private const val LOCATION_FASTEST_INTERVAL_MS = 5_000L
+        // Request fresh location updates frequently enough to support strict 10-second telemetry & trail recording
+        private const val LOCATION_INTERVAL_MS = 5_000L
+        private const val LOCATION_FASTEST_INTERVAL_MS = 3_000L
         private const val LOCATION_MIN_DISTANCE_M = 0f
-        private const val LOCATION_MAX_WAIT_MS = 5_000L
+        private const val LOCATION_MAX_WAIT_MS = 4_000L
 
-        // Heartbeat interval: strictly every 30 seconds
-        private const val HEARTBEAT_INTERVAL_MS = 30_000L // 30 seconds
-        // Fast retry for offline sync queue: every 15 seconds
-        private const val OFFLINE_SYNC_INTERVAL_MS = 15_000L // 15 seconds fast retry
+        // Heartbeat interval: strictly every 10 seconds
+        private const val HEARTBEAT_INTERVAL_MS = 10_000L // 10 seconds
+        // Fast retry for offline sync queue: every 10 seconds
+        private const val OFFLINE_SYNC_INTERVAL_MS = 10_000L // 10 seconds fast retry
 
         fun start(context: Context) {
             val intent = Intent(context, LocationTrackingService::class.java).apply {

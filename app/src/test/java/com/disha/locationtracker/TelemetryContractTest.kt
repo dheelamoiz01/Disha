@@ -136,16 +136,16 @@ class TelemetryContractTest {
     }
 
     @Test
-    fun testTrailRecordingIntervalDefaultIs30Seconds() {
-        // 30-second location trail recording interval (30,000 ms)
+    fun testTrailRecordingIntervalDefaultIs10Seconds() {
+        // 10-second location trail recording interval (10,000 ms)
         val intervalMs = com.disha.locationtracker.service.LocationTrackingService.DEFAULT_TRAIL_RECORDING_INTERVAL_MS
-        assertEquals(30_000L, intervalMs)
-        assertEquals(30 * 1000L, intervalMs)
+        assertEquals(10_000L, intervalMs)
+        assertEquals(10 * 1000L, intervalMs)
     }
 
     @Test
     fun testTrailRecordingIntervalGateLogic() {
-        val intervalMs = 30_000L // 30 seconds (30,000 ms)
+        val intervalMs = 10_000L // 10 seconds (10,000 ms)
         var lastRecordedElapsedMs = 0L
         var isFirstDutyPoint = true
 
@@ -163,25 +163,25 @@ class TelemetryContractTest {
         assertTrue(shouldRecord(0L, isSos = false))
         assertEquals(0L, lastRecordedElapsedMs)
 
-        // t = 10s: Live map fix arrives -> Should NOT record duplicate historical point
-        assertFalse(shouldRecord(10_000L, isSos = false))
+        // t = 3s: Rapid fix arrives -> Should NOT record duplicate historical point
+        assertFalse(shouldRecord(3_000L, isSos = false))
 
-        // t = 20s: 20 seconds in -> Should NOT record (within 30s window)
-        assertFalse(shouldRecord(20_000L, isSos = false))
+        // t = 6s: 6 seconds in -> Should NOT record (within 10s window)
+        assertFalse(shouldRecord(6_000L, isSos = false))
 
-        // t = 29s: 29s -> Should NOT record
-        assertFalse(shouldRecord(29_000L, isSos = false))
+        // t = 9s: 9s -> Should NOT record
+        assertFalse(shouldRecord(9_000L, isSos = false))
 
-        // t = 30s: 30s -> SHOULD record (30-second interval elapsed)
-        assertTrue(shouldRecord(30_000L, isSos = false))
-        assertEquals(30_000L, lastRecordedElapsedMs)
+        // t = 10s: 10s -> SHOULD record (10-second interval elapsed)
+        assertTrue(shouldRecord(10_000L, isSos = false))
+        assertEquals(10_000L, lastRecordedElapsedMs)
 
-        // t = 40s: 10s later -> Should NOT record
-        assertFalse(shouldRecord(40_000L, isSos = false))
+        // t = 13s: 3s later -> Should NOT record
+        assertFalse(shouldRecord(13_000L, isSos = false))
 
-        // t = 45s: Emergency SOS triggered -> SHOULD record immediately!
-        assertTrue(shouldRecord(45_000L, isSos = true))
-        assertEquals(45_000L, lastRecordedElapsedMs)
+        // t = 15s: Emergency SOS triggered -> SHOULD record immediately!
+        assertTrue(shouldRecord(15_000L, isSos = true))
+        assertEquals(15_000L, lastRecordedElapsedMs)
     }
 
     @Test
@@ -266,7 +266,7 @@ class TelemetryContractTest {
         var lastLiveTransmittedElapsedMs = 0L
         var lastTransmittedAccuracy: Float? = null
         var lastTransmittedSource: String? = null
-        val liveIntervalMs = 30_000L
+        val liveIntervalMs = 10_000L
 
         fun evaluateTransmission(currentElapsedMs: Long, accuracy: Float, source: String, isFirst: Boolean): Boolean {
             val isGpsFix = source == "GPS"
@@ -289,21 +289,21 @@ class TelemetryContractTest {
         assertEquals(228.0f, lastTransmittedAccuracy)
         assertEquals("NETWORK", lastTransmittedSource)
 
-        // t = 6s: Real satellite lock acquired (8.0m, GPS)
-        // Even though only 6 seconds passed (well under 30s), accuracy upgrade MUST trigger immediate transmission!
-        assertTrue("Accuracy upgrade from 228m to 8m must bypass 30s transmission delay",
-            evaluateTransmission(6_000L, 8.0f, "GPS", isFirst = false))
+        // t = 2s: Real satellite lock acquired (8.0m, GPS)
+        // Even though only 2 seconds passed (well under 10s), accuracy upgrade MUST trigger immediate transmission!
+        assertTrue("Accuracy upgrade from 228m to 8m must bypass 10s transmission delay",
+            evaluateTransmission(2_000L, 8.0f, "GPS", isFirst = false))
         assertEquals(8.0f, lastTransmittedAccuracy)
         assertEquals("GPS", lastTransmittedSource)
 
-        // t = 12s: Subsequent satellite fix (7.5m, GPS) within the 30s window
+        // t = 5s: Subsequent satellite fix (7.5m, GPS) within the 10s window
         // Should NOT transmit; already verified at 8m
-        assertFalse("Subsequent fix within 30s without coarse upgrade should not transmit",
-            evaluateTransmission(12_000L, 7.5f, "GPS", isFirst = false))
+        assertFalse("Subsequent fix within 10s without coarse upgrade should not transmit",
+            evaluateTransmission(5_000L, 7.5f, "GPS", isFirst = false))
 
-        // t = 36s: 30 seconds since last live transmission (at 6s)
-        // 36s - 6s = 30s >= 30,000ms -> SHOULD transmit
-        assertTrue("Periodic 30s schedule must transmit",
-            evaluateTransmission(36_000L, 6.0f, "GPS", isFirst = false))
+        // t = 12s: 10 seconds since last live transmission (at 2s)
+        // 12s - 2s = 10s >= 10,000ms -> SHOULD transmit
+        assertTrue("Periodic 10s schedule must transmit",
+            evaluateTransmission(12_000L, 6.0f, "GPS", isFirst = false))
     }
 }
