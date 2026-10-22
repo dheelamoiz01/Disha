@@ -48,10 +48,12 @@ export function getISTTimeParts(date: Date): ISTTimeParts {
 }
 
 /**
- * Checks if a timestamp falls within the authorised tracking schedule (07:00 AM – 07:00 PM IST).
+ * Checks if a timestamp falls within the authorised tracking schedule.
+ * In 24×7 mode (default), returns true around the clock every day.
+ * Only restricts to 07:00–19:00 IST if ENFORCE_RESTRICTED_HOURS=1 is explicitly set.
  */
 export function isWithinDutyWindowIST(date: Date): boolean {
-  if (process.env.ENFORCE_RESTRICTED_HOURS === "1" || (!process.env.DISABLE_DUTY_HOURS && process.env.NODE_ENV === "production")) {
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
     const parts = getISTTimeParts(date);
     if (parts.hour < 7) return false;
     if (parts.hour > 19) return false;
@@ -86,8 +88,9 @@ export function validateTelemetryDutyWindow(
   recordedAt: Date,
   serverNow: Date = getDutyCurrentTime()
 ): DutyValidationResult {
-  // If restricted hours are explicitly requested or running in production
-  if (process.env.ENFORCE_RESTRICTED_HOURS === "1" || (!process.env.DISABLE_DUTY_HOURS && process.env.NODE_ENV === "production")) {
+  // 24×7 tracking is default across all environments.
+  // Legacy restricted hours check only fires if explicitly requested via ENFORCE_RESTRICTED_HOURS=1
+  if (process.env.ENFORCE_RESTRICTED_HOURS === "1") {
     if (!isWithinDutyWindowIST(serverNow)) {
       return {
         permitted: false,

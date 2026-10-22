@@ -349,3 +349,22 @@ model Heartbeat {
 
   @@index([personnelId, recordedAt])
 }
+
+
+model AppRelease {
+  id                      String   @id @default(cuid())
+  versionCode             Int      @unique
+  versionName             String
+  releaseNotes            String
+  downloadUrl             String
+  sha256Checksum          String
+  fileSizeBytes           Int?
+  minSupportedVersionCode Int      @default(1)
+  isMandatory             Boolean  @default(false)
+  isActive                Boolean  @default(true)
+  publishedBy             String?
+  publishedAt             DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([isActive, versionCode])
+}

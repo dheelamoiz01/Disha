@@ -224,6 +224,93 @@ test("Disha 24/7 Continuous Location Tracking Test Suite", async (t) => {
     }
   });
 
+  await t.test("8. Tracking across 02:00, 06:00, 19:00, 23:00, and midnight in Asia/Kolkata without stop or reset", async () => {
+    // 02:00 IST (20:30 UTC previous day)
+    const t0200 = new Date("2026-10-23T20:30:00.000Z");
+    setMockDutyTime(t0200);
+    const r0200 = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8520,
+      longitude: 74.2720,
+      accuracy: 6.0,
+      recordedAt: t0200,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(r0200.status, "accepted");
+
+    // 06:00 IST (00:30 UTC)
+    const t0600 = new Date("2026-10-24T00:30:00.000Z");
+    setMockDutyTime(t0600);
+    const r0600 = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8530,
+      longitude: 74.2730,
+      accuracy: 5.5,
+      recordedAt: t0600,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(r0600.status, "accepted");
+
+    // 19:00 IST (13:30 UTC)
+    const t1900 = new Date("2026-10-24T13:30:00.000Z");
+    setMockDutyTime(t1900);
+    const r1900 = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8540,
+      longitude: 74.2740,
+      accuracy: 7.0,
+      recordedAt: t1900,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(r1900.status, "accepted");
+
+    // 23:00 IST (17:30 UTC)
+    const t2300 = new Date("2026-10-24T17:30:00.000Z");
+    setMockDutyTime(t2300);
+    const r2300 = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8550,
+      longitude: 74.2750,
+      accuracy: 6.5,
+      recordedAt: t2300,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(r2300.status, "accepted");
+
+    // Pre-midnight: 23:59:00 IST (18:29:00 UTC)
+    const tPreMidnight = new Date("2026-10-24T18:29:00.000Z");
+    setMockDutyTime(tPreMidnight);
+    const rPre = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8560,
+      longitude: 74.2760,
+      accuracy: 5.0,
+      recordedAt: tPreMidnight,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(rPre.status, "accepted");
+
+    // Post-midnight: 00:00:10 IST (18:30:10 UTC next day, 70s later)
+    const tPostMidnight = new Date("2026-10-24T18:30:10.000Z");
+    setMockDutyTime(tPostMidnight);
+    const rPost = await ingestSingleLocation(personnel.id, {
+      clientEventId: randomUUID(),
+      latitude: 22.8565,
+      longitude: 74.2765,
+      accuracy: 5.5,
+      recordedAt: tPostMidnight,
+      source: "GPS" as any,
+    });
+    assert.strictEqual(rPost.status, "accepted");
+
+    // Overview across midnight: worker remains active, fresh and ONLINE without reset
+    const overview = await getDashboardOverview();
+    const workerOverview = overview.find((p) => p.id === personnel.id);
+    assert.ok(workerOverview);
+    assert.strictEqual(workerOverview.deviceStatus, "ONLINE");
+    assert.strictEqual(workerOverview.trackingStatus, "GPS ACTIVE");
+  });
+
   await t.test("Cleanup test fixtures and reset mock clock", async () => {
     setMockDutyTime(null);
     delete process.env.TRAIL_RECORDING_INTERVAL_MS;

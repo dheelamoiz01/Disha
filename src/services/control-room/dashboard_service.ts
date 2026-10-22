@@ -245,8 +245,8 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
         statusReason = "Location enabled but GPS provider fix is unavailable";
       } else if (loc) {
         const timeDiff = now - locTime;
-        const isLocFromToday = isSameDayIST(new Date(locTime), new Date(now));
-        if (timeDiff <= LOC_STALE_THRESHOLD_MS && isLocFromToday) {
+        const isFreshLocation = timeDiff <= LOC_STALE_THRESHOLD_MS;
+        if (isFreshLocation) {
           if (loc.source === "NETWORK") {
             trackingStatus = "NETWORK LOCATION";
             statusReason = `Approximate network-based fix (±${Math.round(loc.accuracy)}m)`;

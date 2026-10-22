@@ -9,6 +9,7 @@ import {
   Users,
   MapPin,
   Route,
+  Smartphone,
   LogOut,
   KeyRound,
   User,
@@ -73,6 +74,14 @@ export default function DashboardHeader({ initialUser }: { initialUser: HeaderUs
       icon: Route,
       visible: canAccessMap,
       badge: "History",
+    },
+    {
+      name: "Releases (OTA)",
+      shortName: "Releases",
+      href: "/dashboard/releases",
+      icon: Smartphone,
+      visible: canAccessAdmins,
+      badge: "OTA",
     },
   ].filter((item) => item.visible);
 

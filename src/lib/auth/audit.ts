@@ -44,7 +44,8 @@ type AuditAction =
   | "CREATE_STAFF"
   | "UPDATE_STAFF"
   | "RESET_STAFF_PASSWORD"
-  | "DEVICE_SIGNOUT";
+  | "DEVICE_SIGNOUT"
+  | "APP_RELEASE_PUBLISHED";
 
 interface AuditLogOptions {
   actorId?: string;
