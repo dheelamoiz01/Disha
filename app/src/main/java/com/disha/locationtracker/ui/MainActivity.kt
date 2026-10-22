@@ -387,12 +387,12 @@ class MainActivity : AppCompatActivity() {
                 binding.sosButton.setBackgroundColor(ContextCompat.getColor(this, R.color.danger))
             }
             !isDutyHours -> {
-                binding.trackingBadge.text = "STANDBY (OVERNIGHT)"
+                binding.trackingBadge.text = "STANDBY"
                 binding.trackingBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.primary_light))
                 binding.trackingBadge.setTextColor(ContextCompat.getColor(this, R.color.primary_dark))
 
                 binding.trackingStatusIcon.setColorFilter(ContextCompat.getColor(this, R.color.primary))
-                binding.trackingStatusText.text = "Duty window closed (07:00 AM – 10:00 PM IST) • Resumes at 07:00 AM"
+                binding.trackingStatusText.text = "Restricted hours window (07:00 AM – 10:00 PM IST) • Resumes at 07:00 AM"
                 binding.trackingStatusText.setTextColor(ContextCompat.getColor(this, R.color.primary))
 
                 binding.sosButton.text = getString(R.string.trigger_sos)

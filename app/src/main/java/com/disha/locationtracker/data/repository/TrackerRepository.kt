@@ -33,6 +33,12 @@ class TrackerRepository(
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
+    @Volatile
+    private var lastOfflineBufferedElapsedMs = 0L
+
+    @Volatile
+    private var isFirstOfflinePoint = true
+
     init {
         refreshPendingCount()
     }
@@ -54,10 +60,10 @@ class TrackerRepository(
         source: String,
         locationTimestamp: Long = System.currentTimeMillis(),
         batteryLevel: Float? = null,
-        networkState: String? = null
+        networkState: String? = null,
+        isHistoricalScheduled: Boolean = false
     ): Boolean = withContext(Dispatchers.IO) {
-        // Enforce duty window (07:00 AM - 10:00 PM IST):
-        // Only location data collected during the permitted duty window may be uploaded to backend or persisted
+        // Enforce duty window only if restricted hours are active
         if (!DutyTimeHelper.isWithinDutyWindow(locationTimestamp)) {
             return@withContext false
         }
@@ -85,6 +91,7 @@ class TrackerRepository(
         if (result.isSuccess) {
             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             _lastSentTime.postValue(timeStr)
+            isFirstOfflinePoint = true // Reset offline counter on successful live transmission
             // Also attempt to drain offline queue
             syncOfflineQueueInternal()
             refreshPendingCount()
@@ -97,8 +104,15 @@ class TrackerRepository(
                 prefs.isSosActive = false
                 LocationTrackingService.stop(DishaApplication.instance)
             } else {
-                // Buffer to SQLite on temporary network failure or server 5xx (only during duty window)
-                if (DutyTimeHelper.isWithinDutyWindow(locationTimestamp)) {
+                // Buffer to SQLite on temporary network failure or server 5xx.
+                // To prevent SQLite storage bloat during extended network loss,
+                // buffer points scheduled for 30-minute historical recording, SOS mode, or first offline fix.
+                val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                val elapsedSinceOffline = nowElapsed - lastOfflineBufferedElapsedMs
+                val shouldBuffer = prefs.isSosActive || isHistoricalScheduled || isFirstOfflinePoint ||
+                        (elapsedSinceOffline >= LocationTrackingService.DEFAULT_TRAIL_RECORDING_INTERVAL_MS)
+
+                if (shouldBuffer && DutyTimeHelper.isWithinDutyWindow(locationTimestamp)) {
                     val record = CachedLocationRecord(
                         clientEventId = clientEventId,
                         latitude = latitude,
@@ -111,6 +125,8 @@ class TrackerRepository(
                         networkState = networkState
                     )
                     dbHelper.insertLocation(record)
+                    lastOfflineBufferedElapsedMs = nowElapsed
+                    isFirstOfflinePoint = false
                     refreshPendingCount()
                 }
             }
@@ -128,19 +144,24 @@ class TrackerRepository(
         val pending = dbHelper.getPendingLocations(limit = 50)
         if (pending.isEmpty()) return 0
 
-        // Prune any records that fall outside duty hours
-        val validPending = pending.filter { item ->
-            try {
-                val parsed = synchronized(isoDateFormat) { isoDateFormat.parse(item.recordedAt) }
-                if (parsed != null && !DutyTimeHelper.isWithinDutyWindow(parsed.time)) {
-                    dbHelper.deleteLocationByEventId(item.clientEventId)
-                    false
-                } else {
+        // In 24×7 mode, all pending offline points are valid.
+        // If legacy restricted hours are enabled, filter out off-hour points.
+        val validPending = if (DutyTimeHelper.enforceRestrictedHours) {
+            pending.filter { item ->
+                try {
+                    val parsed = synchronized(isoDateFormat) { isoDateFormat.parse(item.recordedAt) }
+                    if (parsed != null && !DutyTimeHelper.isWithinDutyWindow(parsed.time)) {
+                        dbHelper.deleteLocationByEventId(item.clientEventId)
+                        false
+                    } else {
+                        true
+                    }
+                } catch (_: Exception) {
                     true
                 }
-            } catch (_: Exception) {
-                true
             }
+        } else {
+            pending
         }
 
         if (validPending.isEmpty()) return 0

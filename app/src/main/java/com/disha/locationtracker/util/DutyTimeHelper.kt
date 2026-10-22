@@ -6,12 +6,11 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /**
- * Utility for enforcing the Asia/Kolkata (IST) 07:00 AM to 10:00 PM business duty window.
+ * Utility for 24×7 Continuous Location Tracking in Asia/Kolkata (IST).
  *
- * Workers keep the phone's system Location ON 24/7.
- * Tracking and telemetry uploads are strictly gated to 07:00:00.000 AM - 09:59:59.999 PM IST.
- * At 22:00:00 (10:00 PM), the duty window closes.
- * At 07:00:00 (07:00 AM), the duty window opens automatically.
+ * GPS tracking is eligible to run 24 hours a day, 7 days a week,
+ * including nights, weekends, holidays, and outside work sessions.
+ * Location telemetry is accepted continuously without work-hour restrictions.
  */
 object DutyTimeHelper {
 
@@ -21,6 +20,11 @@ object DutyTimeHelper {
     @Volatile
     var testCurrentTimeMillis: Long? = null
 
+    // By default, 24×7 continuous tracking is enabled.
+    // If legacy restricted hours (07:00 AM - 10:00 PM IST) are ever explicitly required:
+    @Volatile
+    var enforceRestrictedHours: Boolean = false
+
     fun nowMillis(): Long = testCurrentTimeMillis ?: System.currentTimeMillis()
 
     fun getZonedDateTime(epochMillis: Long = nowMillis()): ZonedDateTime {
@@ -28,16 +32,12 @@ object DutyTimeHelper {
     }
 
     /**
-     * Checks whether a given timestamp falls strictly within the permitted duty window:
-     * 07:00:00.000 AM to 09:59:59.999 PM Asia/Kolkata (hour in 7..21).
-     *
-     * - At 06:59 IST: false (blocked)
-     * - At 07:00 IST: true (active)
-     * - At 21:59 IST: true (active)
-     * - At 22:00 IST: false (blocked)
-     * - At 22:30 IST: false (blocked)
+     * Checks whether location tracking is active.
+     * In 24×7 mode, returns true at all times (24 hours a day, 7 days a week).
+     * If enforceRestrictedHours is explicitly set to true, enforces 07:00-22:00 IST.
      */
     fun isWithinDutyWindow(epochMillis: Long = nowMillis()): Boolean {
+        if (!enforceRestrictedHours) return true
         val istTime = getZonedDateTime(epochMillis)
         val hour = istTime.hour
         return hour in 7..21

@@ -52,6 +52,7 @@ class LocationTrackingService : Service(), LocationListener {
     private var lastVerifiedLocation: Location? = null
     private var isTrackingStarted = false
     private var lastTrailRecordedElapsedRealtimeMs = 0L
+    private var lastLiveTransmittedElapsedRealtimeMs = 0L
     private var isFirstDutyPoint = true
     private var lastGpsLocationTime: Long = 0L
     private var lastGpsElapsedRealtime: Long = 0L
@@ -82,6 +83,7 @@ class LocationTrackingService : Service(), LocationListener {
             ACTION_START_TRACKING -> {
                 isFirstDutyPoint = true
                 lastTrailRecordedElapsedRealtimeMs = 0L
+                lastLiveTransmittedElapsedRealtimeMs = 0L
                 // Idempotent: ensure updates are flowing and notification is current
                 if (!isTrackingStarted) {
                     startLocationUpdates()
@@ -257,9 +259,9 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
-        // 1. Mandatory Duty Window Enforcement (07:00 AM to 10:00 PM IST)
+        // 1. Mandatory Duty Window Enforcement (if legacy restricted hours are enabled)
         if (!DutyTimeHelper.isWithinDutyWindow()) {
-            updateNotification(lastLocation, "Standby: Outside duty hours (07:00 AM – 10:00 PM IST)")
+            updateNotification(lastLocation, "Standby: Outside restricted duty window (07:00 AM – 10:00 PM IST)")
             return
         }
 
@@ -327,25 +329,27 @@ class LocationTrackingService : Service(), LocationListener {
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
-        // 7. 5-Minute Historical Trail Recording Gate:
-        // While a staff member is on active duty, persist one historical trail point approximately every 5 minutes.
-        // Immediate recording occurs if:
-        //   - Emergency SOS is active (continuous emergency telemetry)
-        //   - First valid fix of the duty session (anchor starting point)
-        //   - >= 5 minutes (300,000ms) has elapsed since the last recorded historical point
+        // 7. 30-Minute Historical Trail Recording & Live Map Telemetry Gate:
+        // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix)
+        // - Historical Trail: Persist historical trail point approximately every 30 minutes (1,800,000 ms)
         val nowElapsed = SystemClock.elapsedRealtime()
-        val elapsedSinceLastRecord = nowElapsed - lastTrailRecordedElapsedRealtimeMs
-        val shouldRecordHistoricalPoint = isSos || isFirstDutyPoint || (elapsedSinceLastRecord >= trailRecordingIntervalMs)
+        val elapsedSinceLastTrail = nowElapsed - lastTrailRecordedElapsedRealtimeMs
+        val isHistoricalDue = isSos || isFirstDutyPoint || (elapsedSinceLastTrail >= trailRecordingIntervalMs)
 
-        if (!shouldRecordHistoricalPoint) {
-            // Within the 5-minute sampling window: do not spam the database with duplicate historical points.
+        val elapsedSinceLastLive = nowElapsed - lastLiveTransmittedElapsedRealtimeMs
+        val isLiveDue = isSos || isFirstDutyPoint || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
+
+        if (!isLiveDue && !isHistoricalDue) {
+            // Live map position transmitted recently and 30-minute historical interval has not elapsed yet.
             // Live notification and local state are already updated above.
             return
         }
 
-        // Commit this point to the historical trail
-        lastTrailRecordedElapsedRealtimeMs = nowElapsed
-        isFirstDutyPoint = false
+        lastLiveTransmittedElapsedRealtimeMs = nowElapsed
+        if (isHistoricalDue) {
+            lastTrailRecordedElapsedRealtimeMs = nowElapsed
+            isFirstDutyPoint = false
+        }
 
         serviceScope.launch {
             DishaApplication.instance.repository.recordAndTransmitLocation(
@@ -355,7 +359,8 @@ class LocationTrackingService : Service(), LocationListener {
                 source = normalizedSource,
                 locationTimestamp = fixTimestamp,
                 batteryLevel = batteryLevel,
-                networkState = networkState
+                networkState = networkState,
+                isHistoricalScheduled = isHistoricalDue
             )
         }
     }
@@ -471,7 +476,7 @@ class LocationTrackingService : Service(), LocationListener {
         val statusText = when {
             extraStatus != null -> extraStatus
             prefs.isSosActive -> "EMERGENCY SOS BROADCASTING"
-            !DutyTimeHelper.isWithinDutyWindow() -> "Standby: Outside duty hours (07:00 AM – 10:00 PM IST)"
+            !DutyTimeHelper.isWithinDutyWindow() -> "Standby: Outside restricted duty window (07:00 AM – 10:00 PM IST)"
             location != null -> {
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(location.time))
                 val providerTag = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "Network"
@@ -504,8 +509,8 @@ class LocationTrackingService : Service(), LocationListener {
         val prefs = DishaApplication.instance.prefs
         val title = when {
             prefs.isSosActive -> "DISHA — EMERGENCY SOS ACTIVE"
-            !DutyTimeHelper.isWithinDutyWindow() -> "DISHA — Standby (07:00 AM – 10:00 PM IST)"
-            else -> "DISHA Field Tracker — Tracking Active"
+            !DutyTimeHelper.isWithinDutyWindow() -> "DISHA — Standby"
+            else -> "DISHA Field Tracker — 24×7 Tracking Active"
         }
 
         val openActivityIntent = Intent(this, MainActivity::class.java).apply {
@@ -588,6 +593,7 @@ class LocationTrackingService : Service(), LocationListener {
         isTrackingStarted = false
         isFirstDutyPoint = true
         lastTrailRecordedElapsedRealtimeMs = 0L
+        lastLiveTransmittedElapsedRealtimeMs = 0L
         try {
             locationCallback?.let { fusedLocationClient?.removeLocationUpdates(it) }
             locationCallback = null
@@ -624,9 +630,12 @@ class LocationTrackingService : Service(), LocationListener {
         const val ACTION_STOP_TRACKING = "com.disha.action.STOP_TRACKING"
         const val ACTION_TRIGGER_SOS = "com.disha.action.TRIGGER_SOS"
 
-        // 5-minute trail recording interval (300,000 ms) while on active duty
-        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 5 * 60 * 1000L
+        // 30-minute trail recording interval (1,800,000 ms)
+        const val DEFAULT_TRAIL_RECORDING_INTERVAL_MS = 30 * 60 * 1000L
         var trailRecordingIntervalMs: Long = DEFAULT_TRAIL_RECORDING_INTERVAL_MS
+
+        // Live Map real-time transmission interval (30 seconds)
+        const val LIVE_TRANSMISSION_INTERVAL_MS = 30_000L
 
         // Fused Location request interval: check location every 30 seconds to maintain warm GPS lock
         private const val LOCATION_INTERVAL_MS = 30_000L
