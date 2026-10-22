@@ -237,4 +237,73 @@ class TelemetryContractTest {
         assertEquals(true, parsed.gpsAvailable)
         assertEquals("2026-10-21T07:59:45.000Z", parsed.lastGpsFixTime)
     }
+
+    @Test
+    fun testFusedProviderResolutionContract() {
+        fun resolveSource(provider: String, accuracy: Float, satellites: Int = 0): String {
+            if (provider == "gps") return "GPS"
+            if (provider == "network") return "NETWORK"
+            if (satellites > 0) return "GPS"
+            if (accuracy <= 25.0f) return "GPS"
+            return "NETWORK"
+        }
+
+        // Native providers
+        assertEquals("GPS", resolveSource("gps", 15.0f))
+        assertEquals("NETWORK", resolveSource("network", 8.0f))
+
+        // Google Play Services Fused Location Provider
+        assertEquals("GPS", resolveSource("fused", 4.2f)) // Optimal satellite lock
+        assertEquals("GPS", resolveSource("fused", 18.0f)) // Verified satellite lock
+        assertEquals("GPS", resolveSource("fused", 25.0f)) // Upper threshold satellite
+        assertEquals("NETWORK", resolveSource("fused", 228.0f)) // Coarse cell tower fix
+        assertEquals("NETWORK", resolveSource("fused", 65.0f)) // Wi-Fi triangulation fix
+        assertEquals("GPS", resolveSource("fused", 35.0f, satellites = 6)) // Coarser fix but GNSS verified
+    }
+
+    @Test
+    fun testAccuracyUpgradeBypassesTransmissionGate() {
+        var lastLiveTransmittedElapsedMs = 0L
+        var lastTransmittedAccuracy: Float? = null
+        var lastTransmittedSource: String? = null
+        val liveIntervalMs = 30_000L
+
+        fun evaluateTransmission(currentElapsedMs: Long, accuracy: Float, source: String, isFirst: Boolean): Boolean {
+            val isGpsFix = source == "GPS"
+            val lastAcc = lastTransmittedAccuracy
+            val isAccuracyUpgrade = (lastAcc == null || lastAcc > 25.0f || lastTransmittedSource == "NETWORK") &&
+                    (accuracy <= 20.0f && isGpsFix)
+            val elapsedSinceLive = currentElapsedMs - lastLiveTransmittedElapsedMs
+            val isLiveDue = isFirst || isAccuracyUpgrade || (elapsedSinceLive >= liveIntervalMs)
+
+            if (isLiveDue) {
+                lastLiveTransmittedElapsedMs = currentElapsedMs
+                lastTransmittedAccuracy = accuracy
+                lastTransmittedSource = source
+            }
+            return isLiveDue
+        }
+
+        // t = 0s: Service starts, initial cached fix (228m, NETWORK) transmitted as first point
+        assertTrue(evaluateTransmission(0L, 228.0f, "NETWORK", isFirst = true))
+        assertEquals(228.0f, lastTransmittedAccuracy)
+        assertEquals("NETWORK", lastTransmittedSource)
+
+        // t = 6s: Real satellite lock acquired (8.0m, GPS)
+        // Even though only 6 seconds passed (well under 30s), accuracy upgrade MUST trigger immediate transmission!
+        assertTrue("Accuracy upgrade from 228m to 8m must bypass 30s transmission delay",
+            evaluateTransmission(6_000L, 8.0f, "GPS", isFirst = false))
+        assertEquals(8.0f, lastTransmittedAccuracy)
+        assertEquals("GPS", lastTransmittedSource)
+
+        // t = 12s: Subsequent satellite fix (7.5m, GPS) within the 30s window
+        // Should NOT transmit; already verified at 8m
+        assertFalse("Subsequent fix within 30s without coarse upgrade should not transmit",
+            evaluateTransmission(12_000L, 7.5f, "GPS", isFirst = false))
+
+        // t = 36s: 30 seconds since last live transmission (at 6s)
+        // 36s - 6s = 30s >= 30,000ms -> SHOULD transmit
+        assertTrue("Periodic 30s schedule must transmit",
+            evaluateTransmission(36_000L, 6.0f, "GPS", isFirst = false))
+    }
 }

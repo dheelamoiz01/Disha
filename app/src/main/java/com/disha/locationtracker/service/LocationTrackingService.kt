@@ -56,6 +56,8 @@ class LocationTrackingService : Service(), LocationListener {
     private var isTrackingStarted = false
     private var lastTrailRecordedElapsedRealtimeMs = 0L
     private var lastLiveTransmittedElapsedRealtimeMs = 0L
+    private var lastTransmittedAccuracy: Float? = null
+    private var lastTransmittedSource: String? = null
     private var isFirstDutyPoint = true
     private var lastGpsLocationTime: Long = 0L
     private var lastGpsElapsedRealtime: Long = 0L
@@ -227,6 +229,32 @@ class LocationTrackingService : Service(), LocationListener {
         isTrackingStarted = true
     }
 
+    /**
+     * Determines whether a location fix should be categorized as GPS or NETWORK.
+     * Google Play Services FusedLocationProviderClient sets location.provider = "fused".
+     * A "fused" fix is satellite GNSS if:
+     * - The provider is native GPS, OR
+     * - The fix has satellite extras (satellites > 0), OR
+     * - The fix has high-precision accuracy (<= 25m), typical of GNSS satellite lock.
+     * Cellular tower and Wi-Fi triangulations without satellite locks typically exhibit accuracy > 30m.
+     */
+    private fun determineLocationSource(location: Location): String {
+        if (location.provider == LocationManager.GPS_PROVIDER) {
+            return "GPS"
+        }
+        if (location.provider == LocationManager.NETWORK_PROVIDER) {
+            return "NETWORK"
+        }
+        val satellites = location.extras?.getInt("satellites", 0) ?: 0
+        if (satellites > 0) {
+            return "GPS"
+        }
+        if (location.hasAccuracy() && location.accuracy <= 25.0f) {
+            return "GPS"
+        }
+        return "NETWORK"
+    }
+
     @SuppressLint("MissingPermission")
     private fun startFusedLocationUpdates() {
         try {
@@ -249,7 +277,7 @@ class LocationTrackingService : Service(), LocationListener {
             locationCallback = object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val location = result.lastLocation ?: return
-                    val source = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
+                    val source = determineLocationSource(location)
                     handleNewLocation(location, source)
                 }
 
@@ -274,7 +302,7 @@ class LocationTrackingService : Service(), LocationListener {
                 if (loc != null && lastLocation == null) {
                     val ageMs = (SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L
                     if (ageMs <= 60_000L) {
-                        val source = if (loc.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
+                        val source = determineLocationSource(loc)
                         handleNewLocation(loc, source)
                     }
                 }
@@ -326,7 +354,7 @@ class LocationTrackingService : Service(), LocationListener {
             if (bestCandidate != null && lastLocation == null) {
                 val ageMs = (SystemClock.elapsedRealtimeNanos() - bestCandidate.elapsedRealtimeNanos) / 1_000_000L
                 if (ageMs <= 60_000L) {
-                    handleNewLocation(bestCandidate, if (bestCandidate.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK")
+                    handleNewLocation(bestCandidate, determineLocationSource(bestCandidate))
                 }
             }
         } catch (e: Exception) {
@@ -335,7 +363,7 @@ class LocationTrackingService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        val src = if (location.provider == LocationManager.GPS_PROVIDER) "GPS" else "NETWORK"
+        val src = determineLocationSource(location)
         handleNewLocation(location, src)
     }
 
@@ -373,8 +401,14 @@ class LocationTrackingService : Service(), LocationListener {
             return
         }
 
+        val determinedSource = if (providerSource == "GPS" || providerSource == "NETWORK") {
+            providerSource
+        } else {
+            determineLocationSource(location)
+        }
+
         // 5. Track GPS vs Network fix timestamp
-        val isGpsFix = location.provider == LocationManager.GPS_PROVIDER || providerSource == "GPS"
+        val isGpsFix = determinedSource == "GPS" || location.provider == LocationManager.GPS_PROVIDER
         val fixTimestamp = if (location.time > 0L) location.time else System.currentTimeMillis()
         if (isGpsFix) {
             lastGpsLocationTime = fixTimestamp
@@ -408,30 +442,38 @@ class LocationTrackingService : Service(), LocationListener {
         val networkState = getNetworkType()
 
         // Normalize source strictly to "GPS" or "NETWORK" for backend Prisma enum compatibility
-        val normalizedSource = when {
-            isGpsFix -> "GPS"
-            location.provider == LocationManager.NETWORK_PROVIDER || providerSource == "NETWORK" -> "NETWORK"
-            else -> "NETWORK"
-        }
+        val normalizedSource = if (isGpsFix) "GPS" else "NETWORK"
 
         // Always keep local notification and UI fresh with the latest real fix
         updateNotification(location)
 
         // 7. 30-Second Historical Trail Recording & Live Map Telemetry Gate:
-        // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix)
+        // - Live Map: Update real-time position on the admin dashboard every ~30 seconds (or on SOS / first fix / accuracy upgrade)
         // - Historical Trail: Persist historical trail point approximately every 30 seconds (30,000 ms)
         val nowElapsed = SystemClock.elapsedRealtime()
         val elapsedSinceLastTrail = nowElapsed - lastTrailRecordedElapsedRealtimeMs
         val isHistoricalDue = isSos || isFirstDutyPoint || (elapsedSinceLastTrail >= trailRecordingIntervalMs)
 
         val elapsedSinceLastLive = nowElapsed - lastLiveTransmittedElapsedRealtimeMs
-        val isLiveDue = isSos || isFirstDutyPoint || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
+        val lastAcc = lastTransmittedAccuracy
+        val isAccuracyUpgrade = (lastAcc == null || lastAcc > 25.0f || lastTransmittedSource == "NETWORK") &&
+                (location.hasAccuracy() && location.accuracy <= 20.0f && isGpsFix)
+
+        val isLiveDue = isSos || isFirstDutyPoint || isAccuracyUpgrade || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
+
+        android.util.Log.i(
+            "DishaLocation",
+            "Fix: lat=${location.latitude}, lon=${location.longitude}, acc=±${location.accuracy}m, rawProvider=${location.provider}, source=$normalizedSource, ageMs=$ageMs, isLiveDue=$isLiveDue, isUpgrade=$isAccuracyUpgrade, isHistorical=$isHistoricalDue"
+        )
 
         if (!isLiveDue && !isHistoricalDue) {
             return
         }
 
         lastLiveTransmittedElapsedRealtimeMs = nowElapsed
+        lastTransmittedAccuracy = location.accuracy
+        lastTransmittedSource = normalizedSource
+
         if (isHistoricalDue) {
             lastTrailRecordedElapsedRealtimeMs = nowElapsed
             isFirstDutyPoint = false
@@ -719,11 +761,13 @@ class LocationTrackingService : Service(), LocationListener {
         // Live Map real-time transmission interval (30 seconds)
         const val LIVE_TRANSMISSION_INTERVAL_MS = 30_000L
 
-        // Fused Location request interval: check location every 30 seconds
-        private const val LOCATION_INTERVAL_MS = 30_000L
-        private const val LOCATION_FASTEST_INTERVAL_MS = 15_000L
+        // Fused Location request intervals:
+        // Sample location with responsive frequency so GNSS hardware stays warm and achieves high accuracy (similar to Google Maps),
+        // while server live transmission and historical database writes remain strictly on the required 30-second schedule.
+        private const val LOCATION_INTERVAL_MS = 10_000L
+        private const val LOCATION_FASTEST_INTERVAL_MS = 5_000L
         private const val LOCATION_MIN_DISTANCE_M = 0f
-        private const val LOCATION_MAX_WAIT_MS = 60_000L
+        private const val LOCATION_MAX_WAIT_MS = 5_000L
 
         // Heartbeat interval: strictly every 30 seconds
         private const val HEARTBEAT_INTERVAL_MS = 30_000L // 30 seconds
