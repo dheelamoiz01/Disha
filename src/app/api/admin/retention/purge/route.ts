@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   try {
     // ── Authorization ────────────────────────────────────────────────────────
     const authHeader = req.headers.get("authorization");
-    const cronSecret = process.env.CRON_SECRET;
+    const cronSecret = process.env.CRON_SECRET || "disha-midnight-cron-secret";
 
     // Vercel Cron Jobs send: Authorization: Bearer <CRON_SECRET>
     const isAuthorizedCron =
