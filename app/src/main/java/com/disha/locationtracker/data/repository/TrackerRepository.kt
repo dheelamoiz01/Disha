@@ -141,6 +141,7 @@ class TrackerRepository(
     }
 
     private suspend fun syncOfflineQueueInternal(): Int {
+        dbHelper.purgeExpiredLocations()
         val pending = dbHelper.getPendingLocations(limit = 50)
         if (pending.isEmpty()) return 0
 
@@ -190,6 +191,9 @@ class TrackerRepository(
                 if (item.status == "accepted" || item.status == "deduplicated") {
                     dbHelper.deleteLocationByEventId(item.clientEventId)
                     count++
+                } else if (item.status == "rejected") {
+                    // Evict points rejected by backend (e.g. TIMESTAMP_STALE) so they are not retried endlessly
+                    dbHelper.deleteLocationByEventId(item.clientEventId)
                 }
             }
             if (count > 0) {

@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.disha.locationtracker.data.model.CachedLocationRecord
+import java.util.Calendar
+import java.util.TimeZone
 
 class OfflineLocationDbHelper(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
@@ -52,11 +54,9 @@ class OfflineLocationDbHelper(context: Context) :
             e.printStackTrace()
         }
 
-        // Enforce 48-hour retention alignment: evict locally cached records whose
-        // recordedAt timestamp is older than 48 hours. The backend will reject them
-        // with TIMESTAMP_STALE anyway, so uploading them wastes bandwidth and
-        // prevents resurrection of expired data after the DB purge has removed them.
-        val cutoffMs = System.currentTimeMillis() - OFFLINE_RETENTION_MS
+        // Enforce rolling 2-business-day retention alignment (Asia/Kolkata):
+        // Evict locally cached records whose timestamp is older than the start of the preceding IST business day.
+        val cutoffMs = getRollingTwoDayCutoffMs()
         try {
             db.execSQL(
                 "DELETE FROM $TABLE_LOCATIONS WHERE $COL_CREATED_AT < ?",
@@ -91,9 +91,19 @@ class OfflineLocationDbHelper(context: Context) :
         val list = mutableListOf<CachedLocationRecord>()
         val db = readableDatabase
 
-        // Only return records whose createdAt timestamp is within the 48-hour window.
-        // Expired records are silently skipped — the backend would reject them anyway.
-        val cutoffMs = System.currentTimeMillis() - OFFLINE_RETENTION_MS
+        // Only return records within the rolling 2-business-day window (Asia/Kolkata).
+        // Expired records from Day N - 2 or earlier are permanently deleted and skipped.
+        val cutoffMs = getRollingTwoDayCutoffMs()
+
+        try {
+            val dbWrite = writableDatabase
+            dbWrite.execSQL(
+                "DELETE FROM $TABLE_LOCATIONS WHERE $COL_CREATED_AT < ?",
+                arrayOf(cutoffMs.toString())
+            )
+        } catch (e: Exception) {
+            // Non-fatal if write is unavailable during query
+        }
 
         val cursor = db.query(
             TABLE_LOCATIONS,
@@ -140,6 +150,13 @@ class OfflineLocationDbHelper(context: Context) :
     }
 
     @Synchronized
+    fun purgeExpiredLocations(nowMs: Long = System.currentTimeMillis()): Int {
+        val db = writableDatabase
+        val cutoffMs = getRollingTwoDayCutoffMs(nowMs)
+        return db.delete(TABLE_LOCATIONS, "$COL_CREATED_AT < ?", arrayOf(cutoffMs.toString()))
+    }
+
+    @Synchronized
     fun deleteLocationByEventId(clientEventId: String): Int {
         val db = writableDatabase
         return db.delete(TABLE_LOCATIONS, "$COL_CLIENT_EVENT_ID = ?", arrayOf(clientEventId))
@@ -161,14 +178,6 @@ class OfflineLocationDbHelper(context: Context) :
         private const val DATABASE_NAME = "disha_offline_telemetry.db"
         private const val DATABASE_VERSION = 1
 
-        /**
-         * 48-hour offline retention window — matches the server-side database
-         * retention policy exactly. Records older than this cannot be uploaded
-         * (the backend will reject them with TIMESTAMP_STALE) and should be
-         * pruned from the local SQLite queue to avoid wasting bandwidth.
-         */
-        const val OFFLINE_RETENTION_MS = 48L * 60L * 60L * 1000L // 48 hours in milliseconds
-
         private const val TABLE_LOCATIONS = "pending_locations"
         private const val COL_ID = "id"
         private const val COL_CLIENT_EVENT_ID = "client_event_id"
@@ -181,5 +190,30 @@ class OfflineLocationDbHelper(context: Context) :
         private const val COL_BATTERY_LEVEL = "battery_level"
         private const val COL_NETWORK_STATE = "network_state"
         private const val COL_CREATED_AT = "created_at"
+
+        /**
+         * Calculates the UTC epoch millisecond timestamp representing the start
+         * (00:00:00.000 IST) of the immediately preceding business day in Asia/Kolkata.
+         *
+         * Rolling 2-business-day policy:
+         *   - Current business day = Day N
+         *   - Immediately preceding business day = Day N - 1
+         *   - Cutoff = Start of Day N - 1 in IST (00:00:00.000 IST)
+         *
+         * Any record recorded strictly before this cutoff belongs to Day N - 2 or earlier
+         * and must be physically purged to prevent resurrected stale trails.
+         */
+        @JvmStatic
+        fun getRollingTwoDayCutoffMs(nowMs: Long = System.currentTimeMillis()): Long {
+            val istZone = TimeZone.getTimeZone("Asia/Kolkata")
+            val cal = Calendar.getInstance(istZone)
+            cal.timeInMillis = nowMs
+            cal.add(Calendar.DAY_OF_MONTH, -1)
+            cal.set(Calendar.HOUR_OF_DAY, 0)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
     }
 }
