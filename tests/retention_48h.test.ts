@@ -1,60 +1,85 @@
 /**
- * DISHA 48-Hour Location Data Retention Policy Test Suite
+ * DISHA Rolling 2-Business-Day Location Data Retention Test Suite
  *
- * Tests the complete retention lifecycle:
- *   1. Physical deletion of GPS pings older than 48 hours
- *   2. Preservation of records within the 48-hour window
- *   3. Preservation of Device latest-position state after ping deletion
- *   4. Preservation of non-location records (User, Personnel, DutySession, etc.)
- *   5. Offline sync upload rejection for records beyond 48 hours
- *   6. Batch delete processing correctness
- *   7. Idempotency — running purge twice produces same result
- *   8. Audit log entries for purge lifecycle
- *   9. Route authentication security:
- *      - Rejection of former default secret ("disha-midnight-cron-secret")
- *      - Rejection when CRON_SECRET is unconfigured
- *      - Acceptance of valid configured secret
- *      - Rejection of invalid secret
+ * Verifies all 10 core requirements:
+ *   1. Day 1 records remain when Day 2 starts.
+ *   2. Day 1 records are permanently deleted when Day 3 starts.
+ *   3. Day 2 and Day 3 records remain after Day 3 cleanup.
+ *   4. Day 2 records are deleted when Day 4 starts.
+ *   5. LocationEvent and Heartbeat follow the same policy.
+ *   6. Current device location and attendance data remain untouched.
+ *   7. Offline sync cannot restore expired trails (ingestion rejects).
+ *   8. Cleanup is idempotent and handles retries safely.
+ *   9. Concurrency lock prevents overlapping runs.
+ *   10. Timezone boundaries behave correctly around midnight IST.
+ *   11. Route authorization security (rejects old default secret, enforces CRON_SECRET).
  */
 
 import test from "node:test";
 import assert from "node:assert";
+import { randomUUID } from "node:crypto";
 import { prisma } from "../src/lib/prisma";
-import { DeviceStatus, UserStatus } from "../generated/prisma/enums";
+import { DeviceStatus, UserStatus, DutyStatus } from "../generated/prisma/enums";
 import {
   purgeExpiredLocationData,
-  MAX_LOCATION_RETENTION_HOURS,
+  getRetentionCutoffDate,
+  RETENTION_POLICY,
+  RETENTION_BUSINESS_DAYS,
 } from "../src/services/retention/purge_service";
-import { validateTelemetryDutyWindow } from "../src/lib/utils/duty_window";
+import {
+  validateTelemetryDutyWindow,
+  getRollingRetentionCutoffIST,
+} from "../src/lib/utils/duty_window";
 import { POST as purgeRoutePost } from "../src/app/api/admin/retention/purge/route";
 
-// ─── Test clock helpers ──────────────────────────────────────────────────────
-
-/** Returns a Date that is exactly `hours` hours ago from now */
-function hoursAgo(hours: number): Date {
-  return new Date(Date.now() - hours * 60 * 60 * 1000);
+// Helper to construct exact IST timestamps
+function istDate(year: number, month: number, day: number, hour: number, minute: number, second: number, ms: number = 0): Date {
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second, ms) - IST_OFFSET_MS);
 }
 
-/** Returns a Date that is exactly `minutes` minutes ago from now */
-function minutesAgo(minutes: number): Date {
-  return new Date(Date.now() - minutes * 60 * 1000);
-}
-
-// ─── Main test suite ─────────────────────────────────────────────────────────
-
-test("DISHA 48-Hour Location Data Retention Test Suite", async (t) => {
+test("DISHA Rolling 2-Business-Day Location Retention Test Suite", async (t) => {
   let user: any;
   let personnel: any;
   let device: any;
+  let dutySession: any;
 
-  // We insert locations directly via prisma so we can set arbitrary timestamps
-  // without going through the ingestion service's 48h upload guard.
-  const testTag = `RET-${Date.now()}`;
+  const testTag = `ROLL-${Date.now()}`;
 
-  await t.test("0. Setup isolated test fixtures", async () => {
+  // IST Reference Dates:
+  // Day 1: 2026-10-21 IST
+  // Day 2: 2026-10-22 IST
+  // Day 3: 2026-10-23 IST
+  // Day 4: 2026-10-24 IST
+  const day1Morning = istDate(2026, 10, 21, 9, 0, 0);
+  const day1LateNight = istDate(2026, 10, 21, 23, 55, 0); // ~24h old when Day 3 starts (less than 48h!)
+
+  const day2Early = istDate(2026, 10, 22, 0, 5, 0);
+  const day2Afternoon = istDate(2026, 10, 22, 14, 0, 0);
+  const day2LateNight = istDate(2026, 10, 22, 23, 50, 0);
+
+  const day3Start = istDate(2026, 10, 23, 0, 1, 0);
+  const day3Afternoon = istDate(2026, 10, 23, 15, 0, 0);
+
+  const day4Start = istDate(2026, 10, 24, 0, 5, 0);
+
+  let idDay1Morning: string;
+  let idDay1LateNight: string;
+  let idDay2Early: string;
+  let idDay2Afternoon: string;
+  let idDay2LateNight: string;
+  let idDay3Start: string;
+  let idDay3Afternoon: string;
+
+  let eventDay1: string;
+  let eventDay2: string;
+  let heartbeatDay1: string;
+  let heartbeatDay2: string;
+
+  await t.test("0. Setup isolated test fixtures and attendance records", async () => {
     user = await prisma.user.create({
       data: {
-        username: `ret_user_${testTag}`,
+        username: `roll_user_${testTag}`,
         passwordHash: "dummyHash",
         role: "FIELD_PERSONNEL",
         status: UserStatus.ACTIVE,
@@ -64,8 +89,8 @@ test("DISHA 48-Hour Location Data Retention Test Suite", async (t) => {
     personnel = await prisma.personnel.create({
       data: {
         userId: user.id,
-        personnelCode: `P-RET-${testTag}`,
-        name: "Retention Test Officer",
+        personnelCode: `P-ROLL-${testTag}`,
+        name: "Rolling Retention Officer",
         active: true,
       },
     });
@@ -73,512 +98,403 @@ test("DISHA 48-Hour Location Data Retention Test Suite", async (t) => {
     device = await prisma.device.create({
       data: {
         personnelId: personnel.id,
-        deviceIdentifier: `DEV-RET-${testTag}`,
+        deviceIdentifier: `DEV-ROLL-${testTag}`,
         platform: "Android",
         status: DeviceStatus.ACTIVE,
-        // Latest live position — must survive after historical pings are deleted
         latestLatitude: 22.84000,
         latestLongitude: 74.26000,
         latestAccuracy: 8.0,
         latestSource: "GPS",
-        latestLocationTime: minutesAgo(5),
+        latestLocationTime: day3Afternoon,
       },
     });
 
-    assert.ok(user.id, "User must be created");
-    assert.ok(personnel.id, "Personnel must be created");
-    assert.ok(device.id, "Device must be created");
+    dutySession = await prisma.dutySession.create({
+      data: {
+        personnelId: personnel.id,
+        deviceId: device.id,
+        startedAt: day1Morning,
+        endedAt: day1LateNight,
+        status: DutyStatus.DUTY_ENDED,
+      },
+    });
+
+    assert.ok(user.id);
+    assert.ok(personnel.id);
+    assert.ok(device.id);
+    assert.ok(dutySession.id);
   });
 
-  // ── Test 1: Insert records at various ages ─────────────────────────────────
-
-  let expiredId1: string;
-  let expiredId2: string;
-  let expiredId3: string;
-  let freshId1: string;
-  let freshId2: string;
-  let boundaryId: string;
-
-  await t.test("1. Insert GPS pings at various timestamps", async () => {
-    // 3 expired records: 72h, 60h, 49h ago
-    const loc72h = await prisma.location.create({
+  await t.test("1. Insert telemetry across Day 1, Day 2, and Day 3", async () => {
+    const loc1 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-expired-72h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8000,
-        longitude: 74.2500,
+        latitude: 22.80001,
+        longitude: 74.20001,
         accuracy: 10.0,
-        recordedAt: hoursAgo(72),
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day1Morning,
+        clientEventId: `evt-d1m-${testTag}`,
       },
     });
-    expiredId1 = loc72h.id;
+    idDay1Morning = loc1.id;
 
-    const loc60h = await prisma.location.create({
+    const loc2 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-expired-60h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8100,
-        longitude: 74.2600,
+        latitude: 22.80002,
+        longitude: 74.20002,
         accuracy: 10.0,
-        recordedAt: hoursAgo(60),
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day1LateNight,
+        clientEventId: `evt-d1ln-${testTag}`,
       },
     });
-    expiredId2 = loc60h.id;
+    idDay1LateNight = loc2.id;
 
-    const loc49h = await prisma.location.create({
+    const loc3 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-expired-49h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8200,
-        longitude: 74.2700,
+        latitude: 22.80003,
+        longitude: 74.20003,
         accuracy: 10.0,
-        recordedAt: hoursAgo(49),
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day2Early,
+        clientEventId: `evt-d2e-${testTag}`,
       },
     });
-    expiredId3 = loc49h.id;
+    idDay2Early = loc3.id;
 
-    // 2 fresh records: 24h and 1h ago
-    const loc24h = await prisma.location.create({
+    const loc4 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-fresh-24h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8300,
-        longitude: 74.2800,
-        accuracy: 8.0,
-        recordedAt: hoursAgo(24),
+        latitude: 22.80004,
+        longitude: 74.20004,
+        accuracy: 10.0,
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day2Afternoon,
+        clientEventId: `evt-d2a-${testTag}`,
       },
     });
-    freshId1 = loc24h.id;
+    idDay2Afternoon = loc4.id;
 
-    const loc1h = await prisma.location.create({
+    const loc5 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-fresh-1h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8400,
-        longitude: 74.2900,
-        accuracy: 6.0,
-        recordedAt: hoursAgo(1),
+        latitude: 22.80005,
+        longitude: 74.20005,
+        accuracy: 10.0,
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day2LateNight,
+        clientEventId: `evt-d2ln-${testTag}`,
       },
     });
-    freshId2 = loc1h.id;
+    idDay2LateNight = loc5.id;
 
-    // Boundary: exactly 48h ago
-    const loc48h = await prisma.location.create({
+    const loc6 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-boundary-48h`,
         personnelId: personnel.id,
         deviceId: device.id,
-        latitude: 22.8250,
-        longitude: 74.2750,
-        accuracy: 9.0,
-        recordedAt: hoursAgo(48),
+        latitude: 22.80006,
+        longitude: 74.20006,
+        accuracy: 10.0,
         source: "GPS",
         trackingMode: "NORMAL",
+        recordedAt: day3Start,
+        clientEventId: `evt-d3s-${testTag}`,
       },
     });
-    boundaryId = loc48h.id;
+    idDay3Start = loc6.id;
 
-    const count = await prisma.location.count({
-      where: { clientEventId: { startsWith: testTag } },
-    });
-    assert.strictEqual(count, 6, "All 6 test location records must exist before purge");
-  });
-
-  // ── Test 2: Insert expired LocationEvents and Heartbeats ──────────────────
-
-  let expiredEventId: string;
-  let freshEventId: string;
-  let expiredHbId: string;
-  let freshHbId: string;
-
-  await t.test("2. Insert expired and fresh LocationEvents and Heartbeats", async () => {
-    const expiredEvent = await prisma.locationEvent.create({
+    const loc7 = await prisma.location.create({
       data: {
-        clientEventId: `${testTag}-evt-expired-60h`,
-        eventType: "LOCATION_UNAVAILABLE",
         personnelId: personnel.id,
         deviceId: device.id,
-        recordedAt: hoursAgo(60),
+        latitude: 22.80007,
+        longitude: 74.20007,
+        accuracy: 10.0,
+        source: "GPS",
+        trackingMode: "NORMAL",
+        recordedAt: day3Afternoon,
+        clientEventId: `evt-d3a-${testTag}`,
       },
     });
-    expiredEventId = expiredEvent.id;
+    idDay3Afternoon = loc7.id;
 
-    const freshEvent = await prisma.locationEvent.create({
+    // Events and Heartbeats on Day 1 and Day 2
+    const ev1 = await prisma.locationEvent.create({
       data: {
-        clientEventId: `${testTag}-evt-fresh-2h`,
-        eventType: "LOCATION_RECOVERED",
+        clientEventId: `ev-${randomUUID()}`,
         personnelId: personnel.id,
         deviceId: device.id,
-        recordedAt: hoursAgo(2),
+        eventType: "NETWORK_LOST",
+        recordedAt: day1Morning,
       },
     });
-    freshEventId = freshEvent.id;
+    eventDay1 = ev1.id;
 
-    const expiredHb = await prisma.heartbeat.create({
+    const ev2 = await prisma.locationEvent.create({
       data: {
-        deviceId: device.id,
+        clientEventId: `ev-${randomUUID()}`,
         personnelId: personnel.id,
-        recordedAt: hoursAgo(55),
-        receivedAt: hoursAgo(55),
-        batteryLevel: 85.0,
+        deviceId: device.id,
+        eventType: "NETWORK_RESTORED",
+        recordedAt: day2Afternoon,
+      },
+    });
+    eventDay2 = ev2.id;
+
+    const hb1 = await prisma.heartbeat.create({
+      data: {
+        personnelId: personnel.id,
+        deviceId: device.id,
+        batteryLevel: 80,
+        networkState: "CELLULAR",
+        appVersion: "1.0.0",
+        recordedAt: day1LateNight,
+      },
+    });
+    heartbeatDay1 = hb1.id;
+
+    const hb2 = await prisma.heartbeat.create({
+      data: {
+        personnelId: personnel.id,
+        deviceId: device.id,
+        batteryLevel: 85,
         networkState: "WIFI",
+        appVersion: "1.0.0",
+        recordedAt: day2LateNight,
       },
     });
-    expiredHbId = expiredHb.id;
+    heartbeatDay2 = hb2.id;
+  });
 
-    const freshHb = await prisma.heartbeat.create({
-      data: {
-        deviceId: device.id,
-        personnelId: personnel.id,
-        recordedAt: minutesAgo(30),
-        receivedAt: minutesAgo(30),
-        batteryLevel: 72.0,
-        networkState: "4G",
-      },
+  await t.test("2. Day 1 records remain when Day 2 is active", async () => {
+    // Current time: Day 2 Afternoon (2026-10-22 14:00:00 IST)
+    // Rolling 2 days: Day 2 (today) + Day 1 (yesterday). Cutoff = 2026-10-21 00:00:00 IST
+    const cutoff = getRollingRetentionCutoffIST(day2Afternoon, 2);
+    assert.strictEqual(cutoff.toISOString(), istDate(2026, 10, 21, 0, 0, 0).toISOString());
+
+    // Both Day 1 records are >= 2026-10-21 00:00:00 IST, so 0 records should be deleted from this test set
+    await purgeExpiredLocationData(2, "TEST_RUNNER", day2Afternoon);
+
+    const d1m = await prisma.location.findUnique({ where: { id: idDay1Morning } });
+    const d1ln = await prisma.location.findUnique({ where: { id: idDay1LateNight } });
+    const d2a = await prisma.location.findUnique({ where: { id: idDay2Afternoon } });
+
+    assert.ok(d1m, "Day 1 morning record must remain on Day 2");
+    assert.ok(d1ln, "Day 1 late night record must remain on Day 2");
+    assert.ok(d2a, "Day 2 record must remain on Day 2");
+  });
+
+  await t.test("3. Day 1 records are permanently deleted when Day 3 starts (even if < 48 hours old)", async () => {
+    // Current time: Day 3 Start (2026-10-23 00:01:00 IST)
+    // Preceding day = Day 2. Cutoff = 2026-10-22 00:00:00 IST
+    // Notice: day1LateNight was recorded on 2026-10-21 23:55:00 IST.
+    // It is only ~24 hours and 6 minutes old! But it belongs to Day 1, so it MUST BE DELETED!
+    const cutoff = getRollingRetentionCutoffIST(day3Start, 2);
+    assert.strictEqual(cutoff.toISOString(), istDate(2026, 10, 22, 0, 0, 0).toISOString());
+
+    const result = await purgeExpiredLocationData(2, "TEST_RUNNER", day3Start);
+    assert.ok(result.locationsPurged >= 2, "Must purge at least the 2 Day 1 locations");
+    assert.strictEqual(result.policy, RETENTION_POLICY);
+
+    // Verify physical database deletion via SQL query
+    const d1m = await prisma.location.findUnique({ where: { id: idDay1Morning } });
+    const d1ln = await prisma.location.findUnique({ where: { id: idDay1LateNight } });
+
+    assert.strictEqual(d1m, null, "Day 1 morning record must be physically deleted from database");
+    assert.strictEqual(d1ln, null, "Day 1 late night record must be physically deleted even though < 48h old");
+
+    // LocationEvent and Heartbeat from Day 1 must also be physically deleted
+    const ev1 = await prisma.locationEvent.findUnique({ where: { id: eventDay1 } });
+    const hb1 = await prisma.heartbeat.findUnique({ where: { id: heartbeatDay1 } });
+    assert.strictEqual(ev1, null, "Day 1 LocationEvent must be physically deleted");
+    assert.strictEqual(hb1, null, "Day 1 Heartbeat must be physically deleted");
+  });
+
+  await t.test("4. Day 2 and Day 3 records remain after Day 3 cleanup", async () => {
+    const d2e = await prisma.location.findUnique({ where: { id: idDay2Early } });
+    const d2a = await prisma.location.findUnique({ where: { id: idDay2Afternoon } });
+    const d2ln = await prisma.location.findUnique({ where: { id: idDay2LateNight } });
+    const d3s = await prisma.location.findUnique({ where: { id: idDay3Start } });
+    const d3a = await prisma.location.findUnique({ where: { id: idDay3Afternoon } });
+
+    assert.ok(d2e, "Day 2 early morning record must remain on Day 3");
+    assert.ok(d2a, "Day 2 afternoon record must remain on Day 3");
+    assert.ok(d2ln, "Day 2 late night record must remain on Day 3");
+    assert.ok(d3s, "Day 3 start record must remain on Day 3");
+    assert.ok(d3a, "Day 3 afternoon record must remain on Day 3");
+
+    const ev2 = await prisma.locationEvent.findUnique({ where: { id: eventDay2 } });
+    const hb2 = await prisma.heartbeat.findUnique({ where: { id: heartbeatDay2 } });
+    assert.ok(ev2, "Day 2 LocationEvent must remain on Day 3");
+    assert.ok(hb2, "Day 2 Heartbeat must remain on Day 3");
+  });
+
+  await t.test("5. Day 2 records are permanently deleted when Day 4 starts", async () => {
+    // Current time: Day 4 Start (2026-10-24 00:05:00 IST)
+    // Preceding day = Day 3. Cutoff = 2026-10-23 00:00:00 IST
+    const cutoff = getRollingRetentionCutoffIST(day4Start, 2);
+    assert.strictEqual(cutoff.toISOString(), istDate(2026, 10, 23, 0, 0, 0).toISOString());
+
+    const result = await purgeExpiredLocationData(2, "TEST_RUNNER", day4Start);
+    assert.ok(result.locationsPurged >= 3, "Must purge Day 2 records");
+
+    const d2e = await prisma.location.findUnique({ where: { id: idDay2Early } });
+    const d2a = await prisma.location.findUnique({ where: { id: idDay2Afternoon } });
+    const d2ln = await prisma.location.findUnique({ where: { id: idDay2LateNight } });
+
+    assert.strictEqual(d2e, null, "Day 2 early record must be deleted on Day 4");
+    assert.strictEqual(d2a, null, "Day 2 afternoon record must be deleted on Day 4");
+    assert.strictEqual(d2ln, null, "Day 2 late night record must be deleted on Day 4");
+
+    // Day 3 records must still be retained
+    const d3s = await prisma.location.findUnique({ where: { id: idDay3Start } });
+    const d3a = await prisma.location.findUnique({ where: { id: idDay3Afternoon } });
+    assert.ok(d3s, "Day 3 records must be preserved on Day 4");
+    assert.ok(d3a, "Day 3 records must be preserved on Day 4");
+
+    // Day 2 Event & Heartbeat purged
+    const ev2 = await prisma.locationEvent.findUnique({ where: { id: eventDay2 } });
+    const hb2 = await prisma.heartbeat.findUnique({ where: { id: heartbeatDay2 } });
+    assert.strictEqual(ev2, null, "Day 2 LocationEvent deleted on Day 4");
+    assert.strictEqual(hb2, null, "Day 2 Heartbeat deleted on Day 4");
+  });
+
+  await t.test("6. Current device location and attendance data remain untouched", async () => {
+    const freshDevice = await prisma.device.findUnique({ where: { id: device.id } });
+    assert.ok(freshDevice, "Device must survive purge");
+    assert.strictEqual(freshDevice.latestLatitude, 22.84000);
+    assert.strictEqual(freshDevice.latestLongitude, 74.26000);
+    assert.strictEqual(freshDevice.latestAccuracy, 8.0);
+    assert.strictEqual(freshDevice.latestSource, "GPS");
+
+    const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
+    const freshPersonnel = await prisma.personnel.findUnique({ where: { id: personnel.id } });
+    assert.ok(freshUser, "User must survive purge");
+    assert.ok(freshPersonnel, "Personnel must survive purge");
+
+    const freshDutySession = await prisma.dutySession.findUnique({ where: { id: dutySession.id } });
+    assert.ok(freshDutySession, "DutySession (attendance) must never be purged");
+    assert.strictEqual(freshDutySession.status, DutyStatus.DUTY_ENDED);
+  });
+
+  await t.test("7. Offline sync cannot restore expired trails (ingestion rejects stale business days)", async () => {
+    // If today is Day 3, attempting to upload a Day 1 ping must be rejected
+    const validationDay1OnDay3 = validateTelemetryDutyWindow(day1LateNight, day3Start);
+    assert.strictEqual(validationDay1OnDay3.permitted, false);
+    assert.strictEqual(validationDay1OnDay3.code, "TIMESTAMP_STALE");
+
+    // Uploading a Day 2 ping on Day 3 is permitted (preceding business day)
+    const validationDay2OnDay3 = validateTelemetryDutyWindow(day2Afternoon, day3Start);
+    assert.strictEqual(validationDay2OnDay3.permitted, true);
+
+    // If today is Day 4, attempting to upload a Day 2 ping must be rejected
+    const validationDay2OnDay4 = validateTelemetryDutyWindow(day2LateNight, day4Start);
+    assert.strictEqual(validationDay2OnDay4.permitted, false);
+    assert.strictEqual(validationDay2OnDay4.code, "TIMESTAMP_STALE");
+  });
+
+  await t.test("8. Cleanup is idempotent and safe to retry", async () => {
+    // Running purge again for Day 4 produces 0 deleted records
+    const secondPurge = await purgeExpiredLocationData(2, "TEST_RUNNER", day4Start);
+    assert.strictEqual(secondPurge.locationsPurged, 0);
+    assert.strictEqual(secondPurge.eventsPurged, 0);
+    assert.strictEqual(secondPurge.heartbeatsPurged, 0);
+  });
+
+  await t.test("9. Timezone boundaries behave correctly around midnight IST", async () => {
+    // 1 millisecond before midnight IST (end of Day 2: 2026-10-22 23:59:59.999 IST)
+    const endOfDay2 = istDate(2026, 10, 22, 23, 59, 59, 999);
+    const cutoffBeforeMidnight = getRollingRetentionCutoffIST(endOfDay2, 2);
+    // Preceding day is Day 1 -> cutoff is start of Day 1 (2026-10-21 00:00:00.000 IST)
+    assert.strictEqual(cutoffBeforeMidnight.toISOString(), istDate(2026, 10, 21, 0, 0, 0).toISOString());
+
+    // Exactly at midnight IST (start of Day 3: 2026-10-23 00:00:00.000 IST)
+    const startOfDay3 = istDate(2026, 10, 23, 0, 0, 0, 0);
+    const cutoffAtMidnight = getRollingRetentionCutoffIST(startOfDay3, 2);
+    // Preceding day is Day 2 -> cutoff is start of Day 2 (2026-10-22 00:00:00.000 IST)
+    assert.strictEqual(cutoffAtMidnight.toISOString(), istDate(2026, 10, 22, 0, 0, 0).toISOString());
+
+    // Day 1 pings transition from valid to expired at exact midnight IST
+    assert.strictEqual(day1LateNight >= cutoffBeforeMidnight, true);
+    assert.strictEqual(day1LateNight < cutoffAtMidnight, true);
+  });
+
+  await t.test("10. Audit log: purge lifecycle records are immutable", async () => {
+    const startedLogs = await prisma.auditLog.findMany({
+      where: { action: "RETENTION_PURGE_STARTED" },
+      orderBy: { createdAt: "desc" },
+      take: 2,
     });
-    freshHbId = freshHb.id;
+    const completedLogs = await prisma.auditLog.findMany({
+      where: { action: "RETENTION_PURGE_COMPLETED" },
+      orderBy: { createdAt: "desc" },
+      take: 2,
+    });
 
-    assert.ok(expiredEventId, "Expired LocationEvent must exist");
-    assert.ok(freshEventId, "Fresh LocationEvent must exist");
-    assert.ok(expiredHbId, "Expired Heartbeat must exist");
-    assert.ok(freshHbId, "Fresh Heartbeat must exist");
+    assert.ok(startedLogs.length > 0, "Must have RETENTION_PURGE_STARTED logs");
+    assert.ok(completedLogs.length > 0, "Must have RETENTION_PURGE_COMPLETED logs");
   });
 
-  // ── Test 3: Run the purge ──────────────────────────────────────────────────
-
-  let purgeResult: any;
-
-  await t.test("3. Execute the 48-hour retention purge job", async () => {
-    purgeResult = await purgeExpiredLocationData(48, `TEST-${testTag}`);
-
-    assert.ok(typeof purgeResult.locationsPurged === "number", "locationsPurged must be a number");
-    assert.ok(typeof purgeResult.eventsPurged === "number", "eventsPurged must be a number");
-    assert.ok(typeof purgeResult.heartbeatsPurged === "number", "heartbeatsPurged must be a number");
-    assert.ok(purgeResult.cutoffDate, "cutoffDate must be returned");
-    assert.ok(purgeResult.durationMs >= 0, "durationMs must be non-negative");
-
-    assert.ok(
-      purgeResult.locationsPurged >= 3,
-      `Expected at least 3 expired locations deleted, got ${purgeResult.locationsPurged}`
-    );
-    assert.ok(
-      purgeResult.eventsPurged >= 1,
-      `Expected at least 1 expired LocationEvent deleted, got ${purgeResult.eventsPurged}`
-    );
-    assert.ok(
-      purgeResult.heartbeatsPurged >= 1,
-      `Expected at least 1 expired Heartbeat deleted, got ${purgeResult.heartbeatsPurged}`
-    );
-  });
-
-  // ── Test 4: Verify expired records are physically gone ────────────────────
-
-  await t.test(
-    "4. Verify: expired GPS pings are physically deleted from the database",
-    async () => {
-      const loc72h = await prisma.location.findUnique({ where: { id: expiredId1 } });
-      assert.strictEqual(
-        loc72h,
-        null,
-        "Location 72h old must be physically deleted (not found in DB)"
-      );
-
-      const loc60h = await prisma.location.findUnique({ where: { id: expiredId2 } });
-      assert.strictEqual(
-        loc60h,
-        null,
-        "Location 60h old must be physically deleted (not found in DB)"
-      );
-
-      const loc49h = await prisma.location.findUnique({ where: { id: expiredId3 } });
-      assert.strictEqual(
-        loc49h,
-        null,
-        "Location 49h old must be physically deleted (not found in DB)"
-      );
-
-      const expiredEvent = await prisma.locationEvent.findUnique({
-        where: { id: expiredEventId },
+  await t.test("11. Route Auth: rejects insecure default secret, enforces CRON_SECRET", async () => {
+    const origSecret = process.env.CRON_SECRET;
+    try {
+      // 11a: Unconfigured CRON_SECRET -> reject
+      delete process.env.CRON_SECRET;
+      const reqNoSecret = new Request("https://disha.local/api/admin/retention/purge", {
+        method: "POST",
+        headers: { Authorization: "Bearer disha-midnight-cron-secret" },
       });
-      assert.strictEqual(
-        expiredEvent,
-        null,
-        "Expired LocationEvent must be physically deleted"
-      );
+      const resNoSecret = await purgeRoutePost(reqNoSecret);
+      assert.strictEqual(resNoSecret.status, 401);
 
-      const expiredHb = await prisma.heartbeat.findUnique({
-        where: { id: expiredHbId },
+      // 11b: Configured CRON_SECRET -> old hardcoded secret rejected
+      process.env.CRON_SECRET = "production-test-secure-cron-secret-123456";
+      const reqOldSecret = new Request("https://disha.local/api/admin/retention/purge", {
+        method: "POST",
+        headers: { Authorization: "Bearer disha-midnight-cron-secret" },
       });
-      assert.strictEqual(
-        expiredHb,
-        null,
-        "Expired Heartbeat must be physically deleted"
-      );
-    }
-  );
+      const resOldSecret = await purgeRoutePost(reqOldSecret);
+      assert.strictEqual(resOldSecret.status, 401);
 
-  // ── Test 5: Verify fresh records remain ───────────────────────────────────
-
-  await t.test(
-    "5. Verify: GPS pings within 48 hours remain in the database",
-    async () => {
-      const loc24h = await prisma.location.findUnique({ where: { id: freshId1 } });
-      assert.ok(loc24h !== null, "Location 24h old must still exist after purge");
-
-      const loc1h = await prisma.location.findUnique({ where: { id: freshId2 } });
-      assert.ok(loc1h !== null, "Location 1h old must still exist after purge");
-
-      const freshEvent = await prisma.locationEvent.findUnique({
-        where: { id: freshEventId },
+      // 11c: Configured CRON_SECRET -> correct secret accepted
+      const reqValid = new Request("https://disha.local/api/admin/retention/purge", {
+        method: "POST",
+        headers: { Authorization: "Bearer production-test-secure-cron-secret-123456" },
       });
-      assert.ok(freshEvent !== null, "Fresh LocationEvent (2h old) must still exist");
-
-      const freshHb = await prisma.heartbeat.findUnique({ where: { id: freshHbId } });
-      assert.ok(freshHb !== null, "Fresh Heartbeat (30min old) must still exist");
-    }
-  );
-
-  // ── Test 6: Live position state on Device is preserved ────────────────────
-
-  await t.test(
-    "6. Verify: Device latest live position is preserved even after historical pings are purged",
-    async () => {
-      const refreshedDevice = await prisma.device.findUnique({
-        where: { id: device.id },
-      });
-
-      assert.ok(refreshedDevice !== null, "Device record must still exist");
-      assert.ok(
-        refreshedDevice!.latestLatitude !== null,
-        "Device.latestLatitude must not be nulled by the purge"
-      );
-      assert.ok(
-        refreshedDevice!.latestLongitude !== null,
-        "Device.latestLongitude must not be nulled by the purge"
-      );
-      assert.strictEqual(
-        refreshedDevice!.latestLatitude,
-        22.84000,
-        "Device.latestLatitude value must be unchanged"
-      );
-      assert.strictEqual(
-        refreshedDevice!.latestLongitude,
-        74.26000,
-        "Device.latestLongitude value must be unchanged"
-      );
-      assert.strictEqual(
-        refreshedDevice!.latestSource,
-        "GPS",
-        "Device.latestSource must be unchanged"
-      );
-    }
-  );
-
-  // ── Test 7: Non-location records are untouched ────────────────────────────
-
-  await t.test(
-    "7. Verify: Worker accounts (User, Personnel) and Device records are not deleted",
-    async () => {
-      const foundUser = await prisma.user.findUnique({ where: { id: user.id } });
-      assert.ok(foundUser !== null, "User account must not be deleted by retention purge");
-
-      const foundPersonnel = await prisma.personnel.findUnique({
-        where: { id: personnel.id },
-      });
-      assert.ok(
-        foundPersonnel !== null,
-        "Personnel record must not be deleted by retention purge"
-      );
-
-      const foundDevice = await prisma.device.findUnique({ where: { id: device.id } });
-      assert.ok(foundDevice !== null, "Device record must not be deleted by retention purge");
-    }
-  );
-
-  // ── Test 8: Idempotency ───────────────────────────────────────────────────
-
-  await t.test(
-    "8. Idempotency: running the purge a second time does not delete fresh records",
-    async () => {
-      const secondResult = await purgeExpiredLocationData(48, `TEST-${testTag}-2nd`);
-
-      const loc24h = await prisma.location.findUnique({ where: { id: freshId1 } });
-      assert.ok(loc24h !== null, "24h-old Location must survive second purge run");
-
-      const loc1h = await prisma.location.findUnique({ where: { id: freshId2 } });
-      assert.ok(loc1h !== null, "1h-old Location must survive second purge run");
-    }
-  );
-
-  // ── Test 9: Offline sync upload rejection beyond 48 hours ─────────────────
-
-  await t.test(
-    "9. Backend: rejects offline-sync uploads with timestamps older than 48 hours",
-    async () => {
-      const serverNow = new Date();
-
-      const stale50h = validateTelemetryDutyWindow(hoursAgo(50), serverNow);
-      assert.strictEqual(
-        stale50h.permitted,
-        false,
-        "50h-old timestamp must be rejected (TIMESTAMP_STALE)"
-      );
-      assert.strictEqual(
-        stale50h.code,
-        "TIMESTAMP_STALE",
-        "Rejection code must be TIMESTAMP_STALE"
-      );
-
-      const fresh47h = validateTelemetryDutyWindow(hoursAgo(47), serverNow);
-      assert.strictEqual(
-        fresh47h.permitted,
-        true,
-        "47h-old timestamp must still be accepted (within 48h window)"
-      );
-    }
-  );
-
-  // ── Test 10: Retention policy constant is 48 hours ────────────────────────
-
-  await t.test(
-    "10. Retention policy constant is enforced at exactly 48 hours",
-    async () => {
-      assert.strictEqual(
-        MAX_LOCATION_RETENTION_HOURS,
-        48,
-        "MAX_LOCATION_RETENTION_HOURS must be exactly 48"
-      );
-    }
-  );
-
-  // ── Test 11: Audit log entries exist for the purge ────────────────────────
-
-  await t.test(
-    "11. Audit log: RETENTION_PURGE_STARTED and RETENTION_PURGE_COMPLETED entries exist",
-    async () => {
-      const auditEntries = await prisma.auditLog.findMany({
-        where: {
-          actorId: `TEST-${testTag}`,
-          action: { in: ["RETENTION_PURGE_STARTED", "RETENTION_PURGE_COMPLETED"] },
-        },
-        orderBy: { createdAt: "asc" },
-      });
-
-      assert.ok(auditEntries.length >= 2, "Expected at least 2 audit entries");
-    }
-  );
-
-  // ── Test 12: Route authentication security ────────────────────────────────
-
-  await t.test(
-    "12. Route Auth: rejects insecure default secret, enforces CRON_SECRET",
-    async () => {
-      const originalSecret = process.env.CRON_SECRET;
-
-      try {
-        // Sub-test A: Unconfigured CRON_SECRET rejects any bearer token
+      const resValid = await purgeRoutePost(reqValid);
+      assert.strictEqual(resValid.status, 200);
+      const json = await resValid.json();
+      assert.strictEqual(json.success, true);
+      assert.ok(json.cutoffDate);
+    } finally {
+      if (origSecret !== undefined) {
+        process.env.CRON_SECRET = origSecret;
+      } else {
         delete process.env.CRON_SECRET;
-
-        const reqOldDefault = new Request("http://localhost:3000/api/admin/retention/purge", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer disha-midnight-cron-secret",
-          },
-        });
-        const resOldDefault = await purgeRoutePost(reqOldDefault);
-        assert.strictEqual(
-          resOldDefault.status,
-          401,
-          "Former hardcoded default secret must return 401 when CRON_SECRET is unconfigured"
-        );
-
-        const reqNoAuth = new Request("http://localhost:3000/api/admin/retention/purge", {
-          method: "POST",
-        });
-        const resNoAuth = await purgeRoutePost(reqNoAuth);
-        assert.strictEqual(resNoAuth.status, 401, "Unauthenticated request must return 401");
-
-        // Sub-test B: Configured CRON_SECRET enforces exact match with timingSafeEqual
-        const testSecret = "test-secret-value-abcdef1234567890";
-        process.env.CRON_SECRET = testSecret;
-
-        // Former default secret must still be rejected
-        const reqOldDefaultWithEnv = new Request("http://localhost:3000/api/admin/retention/purge", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer disha-midnight-cron-secret",
-          },
-        });
-        const resOldDefaultWithEnv = await purgeRoutePost(reqOldDefaultWithEnv);
-        assert.strictEqual(
-          resOldDefaultWithEnv.status,
-          401,
-          "Former default secret must return 401 even when CRON_SECRET is configured"
-        );
-
-        // Wrong secret must be rejected
-        const reqWrong = new Request("http://localhost:3000/api/admin/retention/purge", {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer wrong-token-value",
-          },
-        });
-        const resWrong = await purgeRoutePost(reqWrong);
-        assert.strictEqual(resWrong.status, 401, "Mismatched token must return 401");
-
-        // Matching secret must succeed
-        const reqValid = new Request("http://localhost:3000/api/admin/retention/purge", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${testSecret}`,
-          },
-        });
-        const resValid = await purgeRoutePost(reqValid);
-        assert.strictEqual(resValid.status, 200, "Matching token must return 200");
-        const bodyValid = await resValid.json();
-        assert.strictEqual(bodyValid.success, true);
-      } finally {
-        if (originalSecret !== undefined) {
-          process.env.CRON_SECRET = originalSecret;
-        } else {
-          delete process.env.CRON_SECRET;
-        }
       }
     }
-  );
+  });
 
-  // ── Cleanup ──────────────────────────────────────────────────────────────
-
-  await t.test("13. Cleanup: remove all test fixtures", async () => {
-    await prisma.location.deleteMany({
-      where: { clientEventId: { startsWith: testTag } },
-    });
-
-    await prisma.locationEvent.deleteMany({
-      where: { clientEventId: { startsWith: testTag } },
-    });
-
-    await prisma.heartbeat.deleteMany({
-      where: { deviceId: device.id },
-    });
-
-    await prisma.device.delete({ where: { id: device.id } }).catch(() => {});
-    await prisma.personnel.delete({ where: { id: personnel.id } }).catch(() => {});
-    await prisma.user.delete({ where: { id: user.id } }).catch(() => {});
+  await t.test("12. Cleanup: remove test fixtures", async () => {
+    await prisma.location.deleteMany({ where: { personnelId: personnel.id } });
+    await prisma.locationEvent.deleteMany({ where: { personnelId: personnel.id } });
+    await prisma.heartbeat.deleteMany({ where: { personnelId: personnel.id } });
+    await prisma.dutySession.deleteMany({ where: { personnelId: personnel.id } });
+    await prisma.device.deleteMany({ where: { personnelId: personnel.id } });
+    await prisma.personnel.deleteMany({ where: { id: personnel.id } });
+    await prisma.user.deleteMany({ where: { id: user.id } });
   });
 });

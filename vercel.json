@@ -3,7 +3,7 @@
   "crons": [
     {
       "path": "/api/admin/retention/purge",
-      "schedule": "0 0 * * *"
+      "schedule": "30 18 * * *"
     }
   ]
 }

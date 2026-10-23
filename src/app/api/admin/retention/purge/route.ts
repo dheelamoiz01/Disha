@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { purgeExpiredLocationData, MAX_LOCATION_RETENTION_HOURS } from "@/services/retention/purge_service";
+import { purgeExpiredLocationData, RETENTION_BUSINESS_DAYS } from "@/services/retention/purge_service";
 import { getSession } from "@/lib/auth/session";
 import { isSuperAdmin } from "@/lib/auth/permissions";
 
@@ -10,7 +10,7 @@ export const maxDuration = 60; // seconds — allow time for large batch deletes
 /**
  * POST /api/admin/retention/purge
  *
- * Triggers the 48-hour location data retention purge.
+ * Triggers the rolling 2-business-day location data retention purge (Asia/Kolkata).
  *
  * Authorization (either one is sufficient):
  *   1. SuperAdmin session cookie  (manual trigger from dashboard)
@@ -23,7 +23,7 @@ export const maxDuration = 60; // seconds — allow time for large batch deletes
  *   - Secret tokens are never logged or exposed in responses.
  *
  * Body (optional JSON):
- *   { "retentionHours": number }  — clamped to MAX_LOCATION_RETENTION_HOURS (48h)
+ *   { "retentionDays": number } or { "businessDays": number } or { "retentionHours": number }
  */
 export async function POST(req: Request) {
   try {
@@ -74,26 +74,41 @@ export async function POST(req: Request) {
     }
 
     // ── Parse optional override ──────────────────────────────────────────────
-    let retentionHours = MAX_LOCATION_RETENTION_HOURS; // 48h default
+    let daysOrHours = RETENTION_BUSINESS_DAYS; // Default 2 business days
 
     try {
       const body = await req.json();
-      if (body?.retentionHours != null) {
+      if (body?.retentionDays != null) {
+        const parsed = Number(body.retentionDays);
+        if (!isNaN(parsed) && parsed > 0) daysOrHours = parsed;
+      } else if (body?.businessDays != null) {
+        const parsed = Number(body.businessDays);
+        if (!isNaN(parsed) && parsed > 0) daysOrHours = parsed;
+      } else if (body?.retentionHours != null) {
         const parsed = Number(body.retentionHours);
-        if (!isNaN(parsed) && parsed > 0) {
-          retentionHours = Math.min(parsed, MAX_LOCATION_RETENTION_HOURS);
-        }
+        if (!isNaN(parsed) && parsed > 0) daysOrHours = parsed;
       }
     } catch {
-      // No body or invalid JSON — use default 48h
+      // No body or invalid JSON — use default 2 business days
     }
 
     // ── Execute purge ────────────────────────────────────────────────────────
-    const result = await purgeExpiredLocationData(retentionHours, actorId);
+    const result = await purgeExpiredLocationData(daysOrHours, actorId);
+
+    if (result.skipped) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "A retention purge is already in progress. Concurrent request skipped.",
+          ...result,
+        },
+        { status: 409 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      message: `48-hour retention purge completed. Permanently deleted ${result.locationsPurged} GPS pings, ${result.eventsPurged} location events, and ${result.heartbeatsPurged} heartbeats older than ${retentionHours}h (cutoff: ${result.cutoffDate}).`,
+      message: `Rolling 2-day retention purge completed. Permanently deleted ${result.locationsPurged} GPS pings, ${result.eventsPurged} location events, and ${result.heartbeatsPurged} heartbeats older than cutoff (cutoff: ${result.cutoffDate}).`,
       ...result,
     });
   } catch (error: any) {

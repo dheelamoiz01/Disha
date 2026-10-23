@@ -1,15 +1,24 @@
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/auth/audit";
+import { getRollingRetentionCutoffIST, getDutyCurrentTime } from "@/lib/utils/duty_window";
 
 /**
- * DISHA 48-Hour Location Data Retention Service
+ * DISHA Rolling 2-Business-Day Location Data Retention Service
  *
- * Policy: Every GPS location ping (Location record), associated LocationEvents,
- * and Heartbeat records are physically and permanently deleted from the database
- * once they become older than 48 hours.
+ * Policy:
+ *   Always retain location history for:
+ *     - The current business day (Asia/Kolkata).
+ *     - The immediately preceding business day (Asia/Kolkata).
  *
- * This uses actual SQL DELETE operations. There is NO soft deletion, archiving,
- * or hiding of records. Once committed, expired records cease to exist in the database.
+ *   When a new business day starts in Asia/Kolkata, the complete historical GPS trail
+ *   belonging to any earlier business day is permanently and physically deleted
+ *   from the database using SQL DELETE.
+ *
+ * Example:
+ *   - Day 1: Keep Day 1.
+ *   - Day 2: Keep Day 1 and Day 2.
+ *   - Day 3: Delete all Day 1 historical trail records; keep Day 2 and Day 3.
+ *   - Day 4: Delete all Day 2 historical trail records; keep Day 3 and Day 4.
  *
  * Tables pruned:
  *   - Location         (GPS pings — primary retention target)
@@ -17,19 +26,24 @@ import { logAudit } from "@/lib/auth/audit";
  *   - Heartbeat        (device heartbeat/status pings)
  *
  * Tables NEVER touched by this job:
- *   - User, Personnel, Device  (worker accounts and latest live position)
- *   - DutySession              (attendance / work sessions)
- *   - SOSEvent, Alert          (safety events — separate legal hold policy applies)
- *   - AuditLog                 (immutable audit trail)
+ *   - Device.latestLatitude, latestLongitude, latestAccuracy, latestLocationTime (live map state)
+ *   - User, Personnel  (worker accounts and profiles)
+ *   - DutySession      (attendance / work sessions)
+ *   - SOSEvent, Alert  (safety events — legal hold policy applies)
+ *   - AuditLog         (immutable audit trail)
  *   - Session, DeviceCredential (auth records)
- *   - AppRelease               (OTA release metadata)
+ *   - AppRelease       (OTA release metadata)
  */
 
-/** Strict maximum — cannot exceed this retention window regardless of env config */
-export const MAX_LOCATION_RETENTION_HOURS = 48;
+export const RETENTION_POLICY = "rolling_2_business_days_ist";
+export const RETENTION_BUSINESS_DAYS = 2;
+export const MAX_LOCATION_RETENTION_HOURS = 48; // Kept for backward compatibility
 
 /** Batch size for safe incremental deletes — avoids holding large table locks */
 const PURGE_BATCH_SIZE = 500;
+
+/** Concurrency mutex to prevent overlapping purge runs */
+let isPurgeRunning = false;
 
 export interface PurgeResult {
   locationsPurged: number;
@@ -37,39 +51,78 @@ export interface PurgeResult {
   heartbeatsPurged: number;
   cutoffDate: string;
   durationMs: number;
+  policy: string;
+  skipped?: boolean;
+}
+
+/**
+ * Calculates the authoritative cutoff timestamp for rolling 2-day retention.
+ * Any record recorded before this cutoff belongs to a business day older
+ * than the preceding business day and must be deleted.
+ */
+export function getRetentionCutoffDate(
+  referenceTime: Date = getDutyCurrentTime(),
+  businessDaysToKeep: number = RETENTION_BUSINESS_DAYS
+): Date {
+  return getRollingRetentionCutoffIST(referenceTime, businessDaysToKeep);
 }
 
 /**
  * Permanently deletes GPS location pings, LocationEvents, and Heartbeats
- * older than the retention window (default 48 hours, maximum 48 hours).
+ * older than the rolling 2-business-day window in Asia/Kolkata.
  *
- * The cutoff timestamp is always derived from the authoritative server clock:
- *   cutoff = now() - retentionHours
+ * The cutoff timestamp is derived from the server clock:
+ *   cutoff = Start of preceding business day in Asia/Kolkata (00:00:00.000 IST).
  *
  * Records with recordedAt < cutoff are physically DELETEd from the database.
- * Processing occurs in batches of 500 to prevent blocking live writes.
+ * Processing occurs in safe batches of 500 to prevent blocking live writes.
  *
- * @param retentionHours - Number of hours to retain (max 48, default 48)
- * @param actorId        - Identifier for audit log (user ID or "SYSTEM_CRON")
+ * @param daysOrHours   - Business days to retain (default 2), or hours (e.g. 48)
+ * @param actorId       - Identifier for audit log (user ID or "SYSTEM_CRON")
+ * @param referenceTime - Optional reference time (defaults to server clock / mock clock)
  */
 export async function purgeExpiredLocationData(
-  retentionHours: number = MAX_LOCATION_RETENTION_HOURS,
-  actorId: string = "SYSTEM_CRON"
+  daysOrHours: number = RETENTION_BUSINESS_DAYS,
+  actorId: string = "SYSTEM_CRON",
+  referenceTime?: Date
 ): Promise<PurgeResult> {
   const startedAt = Date.now();
 
-  // Strictly enforce the 48-hour ceiling — never allow config to exceed it
-  const effectiveHours = Math.min(
-    Math.max(1, retentionHours),
-    MAX_LOCATION_RETENTION_HOURS
-  );
+  // Normalize days vs hours input
+  let effectiveDays = RETENTION_BUSINESS_DAYS;
+  if (typeof daysOrHours === "number") {
+    if (daysOrHours > 7) {
+      // Input in hours (e.g. 48 -> 2 days)
+      effectiveDays = Math.max(1, Math.round(daysOrHours / 24));
+    } else {
+      effectiveDays = Math.max(1, daysOrHours);
+    }
+  }
+  // Policy strictly enforces retaining at most 2 business days
+  effectiveDays = Math.min(effectiveDays, RETENTION_BUSINESS_DAYS);
 
-  // Cutoff = authoritative server UTC time minus retention window
-  const cutoffDate = new Date(Date.now() - effectiveHours * 60 * 60 * 1000);
+  const baseTime = referenceTime ?? getDutyCurrentTime();
+  const cutoffDate = getRollingRetentionCutoffIST(baseTime, effectiveDays);
+
+  // Concurrency guard: prevent overlapping purge jobs
+  if (isPurgeRunning) {
+    console.warn("[RetentionPurge] Concurrency lock active: another purge is already running. Skipping.");
+    return {
+      locationsPurged: 0,
+      eventsPurged: 0,
+      heartbeatsPurged: 0,
+      cutoffDate: cutoffDate.toISOString(),
+      durationMs: Date.now() - startedAt,
+      policy: RETENTION_POLICY,
+      skipped: true,
+    };
+  }
+
+  isPurgeRunning = true;
 
   console.log(
-    `[RetentionPurge] Starting 48-hour purge. Cutoff: ${cutoffDate.toISOString()} (server UTC). ` +
-    `Deleting Location, LocationEvent, and Heartbeat records older than ${effectiveHours}h.`
+    `[RetentionPurge] Starting rolling 2-business-day purge (IST). Cutoff: ${cutoffDate.toISOString()} ` +
+    `(Start of preceding IST business day: 00:00:00 IST). Deleting Location, LocationEvent, and Heartbeat.`
   );
 
   await logAudit({
@@ -77,8 +130,9 @@ export async function purgeExpiredLocationData(
     action: "RETENTION_PURGE_STARTED",
     metadata: {
       cutoffDate: cutoffDate.toISOString(),
-      retentionHours: effectiveHours,
-      policy: "48h_hard_delete",
+      policy: RETENTION_POLICY,
+      businessDays: effectiveDays,
+      referenceTime: baseTime.toISOString(),
     },
   });
 
@@ -179,7 +233,8 @@ export async function purgeExpiredLocationData(
         eventsPurged,
         heartbeatsPurged,
         cutoffDate: cutoffDate.toISOString(),
-        retentionHours: effectiveHours,
+        policy: RETENTION_POLICY,
+        businessDays: effectiveDays,
         durationMs,
       },
     });
@@ -190,6 +245,7 @@ export async function purgeExpiredLocationData(
       heartbeatsPurged,
       cutoffDate: cutoffDate.toISOString(),
       durationMs,
+      policy: RETENTION_POLICY,
     };
   } catch (error: unknown) {
     const durationMs = Date.now() - startedAt;
@@ -203,7 +259,8 @@ export async function purgeExpiredLocationData(
       metadata: {
         error: errorMsg,
         cutoffDate: cutoffDate.toISOString(),
-        retentionHours: effectiveHours,
+        policy: RETENTION_POLICY,
+        businessDays: effectiveDays,
         partialLocationsPurged: locationsPurged,
         partialEventsPurged: eventsPurged,
         partialHeartbeatsPurged: heartbeatsPurged,
@@ -212,21 +269,19 @@ export async function purgeExpiredLocationData(
     });
 
     throw error;
+  } finally {
+    isPurgeRunning = false;
   }
 }
 
 /**
- * @deprecated Use purgeExpiredLocationData() instead.
- * Kept for backward compatibility with the existing purge route.
- * The daysToKeep parameter is clamped to a maximum of 2 days (48 hours).
+ * Kept for backward compatibility with existing callers.
  */
 export async function purgeOldTelemetry(
   daysToKeep: number = 2,
   actorId?: string
 ): Promise<{ locationsPurged: number; eventsPurged: number; heartbeatsPurged: number }> {
-  // Convert days to hours, capped at 48h
-  const requestedHours = Math.min(daysToKeep * 24, MAX_LOCATION_RETENTION_HOURS);
-  const result = await purgeExpiredLocationData(requestedHours, actorId ?? "SYSTEM_CRON");
+  const result = await purgeExpiredLocationData(daysToKeep, actorId ?? "SYSTEM_CRON");
   return {
     locationsPurged: result.locationsPurged,
     eventsPurged: result.eventsPurged,
