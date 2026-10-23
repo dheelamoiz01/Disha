@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/admin/retention/purge",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/admin/retention/purge",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/admin/retention/purge",
+      "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/admin/retention/purge",
+      "schedule": "0 18 * * *"
+    }
+  ]
+}

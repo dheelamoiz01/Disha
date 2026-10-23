@@ -118,14 +118,20 @@ export function validateTelemetryDutyWindow(
     };
   }
 
-  // 2. Reject stale records beyond 7 days tolerance
+  // 2. Reject stale records beyond 48-hour tolerance.
+  //    This matches the database retention policy exactly: records older than 48h
+  //    will be physically deleted by the hourly purge job, so accepting uploads
+  //    beyond this window would insert records that are immediately eligible for
+  //    deletion and could not appear in historical trail queries.
+  //    This also prevents offline-queued pings from being re-uploaded after
+  //    the retention window has expired.
   const ageMs = serverNow.getTime() - recordedAt.getTime();
-  const MAX_PAST_TOLERANCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days past
+  const MAX_PAST_TOLERANCE_MS = 48 * 60 * 60 * 1000; // 48 hours — matches retention policy
   if (ageMs > MAX_PAST_TOLERANCE_MS) {
     return {
       permitted: false,
       code: "TIMESTAMP_STALE",
-      reason: "Location timestamp is older than 7 days.",
+      reason: "Location timestamp is older than 48 hours. Records beyond the retention window are not accepted.",
     };
   }
 
