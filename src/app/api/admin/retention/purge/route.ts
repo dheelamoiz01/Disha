@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { purgeExpiredLocationData, MAX_LOCATION_RETENTION_HOURS } from "@/services/retention/purge_service";
 import { getSession } from "@/lib/auth/session";
 import { isSuperAdmin } from "@/lib/auth/permissions";
@@ -15,37 +16,60 @@ export const maxDuration = 60; // seconds — allow time for large batch deletes
  *   1. SuperAdmin session cookie  (manual trigger from dashboard)
  *   2. Authorization: Bearer <CRON_SECRET>  (automated Vercel Cron Job or external scheduler)
  *
- * The CRON_SECRET must be set in Vercel environment variables. Vercel Cron Jobs
- * automatically send this header when invoking the endpoint.
+ * Security Requirements:
+ *   - CRON_SECRET must be configured in environment variables.
+ *   - No hardcoded default secret or fallback is permitted.
+ *   - Constant-time comparison prevents timing attacks.
+ *   - Secret tokens are never logged or exposed in responses.
  *
  * Body (optional JSON):
- *   { "retentionHours": number }  — must be <= 48 (the hard policy limit)
+ *   { "retentionHours": number }  — clamped to MAX_LOCATION_RETENTION_HOURS (48h)
  */
 export async function POST(req: Request) {
   try {
     // ── Authorization ────────────────────────────────────────────────────────
     const authHeader = req.headers.get("authorization");
-    const cronSecret = process.env.CRON_SECRET || "disha-midnight-cron-secret";
+    const configuredCronSecret = process.env.CRON_SECRET?.trim();
 
-    // Vercel Cron Jobs send: Authorization: Bearer <CRON_SECRET>
-    const isAuthorizedCron =
-      cronSecret && authHeader && authHeader === `Bearer ${cronSecret}`;
-
+    let isAuthorizedCron = false;
     let actorId = "SYSTEM_CRON";
     let isAuthorizedAdmin = false;
 
-    try {
-      const { session, user } = await getSession();
-      if (session && user && isSuperAdmin(user)) {
-        isAuthorizedAdmin = true;
-        actorId = user.id;
+    // 1. Check Bearer Token (for automated cron invocation)
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const providedToken = authHeader.substring(7).trim();
+
+      if (!configuredCronSecret) {
+        console.error(
+          "[RetentionPurge] Authorization rejected: CRON_SECRET environment variable is missing or empty on the server."
+        );
+      } else {
+        try {
+          const a = Buffer.from(providedToken, "utf-8");
+          const b = Buffer.from(configuredCronSecret, "utf-8");
+          if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+            isAuthorizedCron = true;
+          }
+        } catch {
+          isAuthorizedCron = false;
+        }
       }
-    } catch {
-      // Session check failure is not a hard error here — cron auth may still be valid
+    }
+
+    // 2. Check SuperAdmin session (for authenticated manual execution from control room)
+    if (!isAuthorizedCron) {
+      try {
+        const { session, user } = await getSession();
+        if (session && user && isSuperAdmin(user)) {
+          isAuthorizedAdmin = true;
+          actorId = user.id;
+        }
+      } catch {
+        // Session check error does not grant access
+      }
     }
 
     if (!isAuthorizedCron && !isAuthorizedAdmin) {
-      console.warn("[RetentionPurge] Unauthorized purge attempt — missing valid CRON_SECRET or admin session.");
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -84,8 +108,8 @@ export async function POST(req: Request) {
 /**
  * GET /api/admin/retention/purge
  *
- * Supported for Vercel Cron Jobs which may invoke via GET.
- * Vercel sends Authorization: Bearer <CRON_SECRET> automatically.
+ * Supported for Vercel Cron Jobs which invoke endpoints via GET.
+ * Evaluates the same authentication and executes the purge.
  */
 export async function GET(req: Request) {
   return POST(req);
