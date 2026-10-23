@@ -52,6 +52,20 @@ class OfflineLocationDbHelper(context: Context) :
             e.printStackTrace()
         }
 
+        // Enforce 48-hour retention alignment: evict locally cached records whose
+        // recordedAt timestamp is older than 48 hours. The backend will reject them
+        // with TIMESTAMP_STALE anyway, so uploading them wastes bandwidth and
+        // prevents resurrection of expired data after the DB purge has removed them.
+        val cutoffMs = System.currentTimeMillis() - OFFLINE_RETENTION_MS
+        try {
+            db.execSQL(
+                "DELETE FROM $TABLE_LOCATIONS WHERE $COL_CREATED_AT < ?",
+                arrayOf(cutoffMs.toString())
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val values = ContentValues().apply {
             put(COL_CLIENT_EVENT_ID, record.clientEventId)
             put(COL_LATITUDE, record.latitude)
@@ -76,11 +90,16 @@ class OfflineLocationDbHelper(context: Context) :
     fun getPendingLocations(limit: Int = 50): List<CachedLocationRecord> {
         val list = mutableListOf<CachedLocationRecord>()
         val db = readableDatabase
+
+        // Only return records whose createdAt timestamp is within the 48-hour window.
+        // Expired records are silently skipped — the backend would reject them anyway.
+        val cutoffMs = System.currentTimeMillis() - OFFLINE_RETENTION_MS
+
         val cursor = db.query(
             TABLE_LOCATIONS,
             null,
-            null,
-            null,
+            "$COL_CREATED_AT >= ?",
+            arrayOf(cutoffMs.toString()),
             null,
             null,
             "$COL_CREATED_AT ASC",
@@ -141,6 +160,14 @@ class OfflineLocationDbHelper(context: Context) :
     companion object {
         private const val DATABASE_NAME = "disha_offline_telemetry.db"
         private const val DATABASE_VERSION = 1
+
+        /**
+         * 48-hour offline retention window — matches the server-side database
+         * retention policy exactly. Records older than this cannot be uploaded
+         * (the backend will reject them with TIMESTAMP_STALE) and should be
+         * pruned from the local SQLite queue to avoid wasting bandwidth.
+         */
+        const val OFFLINE_RETENTION_MS = 48L * 60L * 60L * 1000L // 48 hours in milliseconds
 
         private const val TABLE_LOCATIONS = "pending_locations"
         private const val COL_ID = "id"
