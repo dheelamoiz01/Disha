@@ -7,6 +7,7 @@ import {
   getDutyCurrentTime,
   validateTelemetryDutyWindow,
 } from "@/lib/utils/duty_window";
+import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 
 export class TelemetryError extends Error {
   constructor(message: string, public code: string) {
@@ -125,6 +126,8 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           data: updateData,
         });
 
+        invalidateDashboardCache();
+
         return {
           status: "deduplicated",
           locationId: lastRecorded.id,
@@ -173,6 +176,8 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
       where: { id: device.id },
       data: updateData,
     });
+
+    invalidateDashboardCache();
 
     return { status: "accepted", locationId: location.id, receivedAt: location.receivedAt };
   } catch (error: unknown) {
@@ -309,7 +314,14 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       }
     }
 
-    // Update device position to newest valid location in batch so Live Map reflects freshest position
+    // Update device position and always touch lastSeenAt/lastHeartbeatAt/status: ACTIVE
+    // so incoming batch immediately marks device ONLINE
+    const deviceBatchUpdate: any = {
+      lastSeenAt: serverNow,
+      lastHeartbeatAt: serverNow,
+      status: "ACTIVE",
+    };
+
     const validLocs = input.locations.filter((l) =>
       results.locations.some(
         (r) => r.clientEventId === l.clientEventId && (r.status === "accepted" || r.status === "deduplicated")
@@ -325,19 +337,19 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
         console.log(
           `[Batch Ingestion] Device ${device.deviceIdentifier}: Updating latest position -> Lat=${latestBatchLoc.latitude.toFixed(5)}, Lon=${latestBatchLoc.longitude.toFixed(5)}, Acc=±${latestBatchLoc.accuracy.toFixed(1)}m, Source=${latestBatchLoc.source}`
         );
-        await prisma.device.update({
-          where: { id: device.id },
-          data: {
-            latestLatitude: latestBatchLoc.latitude,
-            latestLongitude: latestBatchLoc.longitude,
-            latestAccuracy: latestBatchLoc.accuracy,
-            latestLocationTime: new Date(latestBatchLoc.recordedAt),
-            latestSource: latestBatchLoc.source,
-            lastHeartbeatAt: serverNow,
-          },
-        });
+        deviceBatchUpdate.latestLatitude = latestBatchLoc.latitude;
+        deviceBatchUpdate.latestLongitude = latestBatchLoc.longitude;
+        deviceBatchUpdate.latestAccuracy = latestBatchLoc.accuracy;
+        deviceBatchUpdate.latestLocationTime = new Date(latestBatchLoc.recordedAt);
+        deviceBatchUpdate.latestSource = latestBatchLoc.source;
       }
     }
+
+    await prisma.device.update({
+      where: { id: device.id },
+      data: deviceBatchUpdate,
+    });
+    invalidateDashboardCache();
   }
 
   if (input.events && input.events.length > 0) {

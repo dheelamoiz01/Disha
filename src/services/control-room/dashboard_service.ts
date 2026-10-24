@@ -240,24 +240,20 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
       } else if (primaryDevice?.isTrackingRunning === false) {
         trackingStatus = "TRACKING INTERRUPTED";
         statusReason = "Location tracking service has stopped";
+      } else if (loc && (now - locTime <= LOC_STALE_THRESHOLD_MS)) {
+        if (loc.source === "NETWORK") {
+          trackingStatus = "NETWORK LOCATION";
+          statusReason = `Approximate network-based fix (±${Math.round(loc.accuracy)}m)`;
+        } else {
+          trackingStatus = "GPS ACTIVE";
+          statusReason = `Verified GPS satellite fix (±${Math.round(loc.accuracy)}m)`;
+        }
       } else if (primaryDevice?.gpsAvailable === false || (ev && ev.eventType === "LOCATION_UNAVAILABLE" && evTime >= locTime)) {
         trackingStatus = "GPS UNAVAILABLE";
         statusReason = "Location enabled but GPS provider fix is unavailable";
       } else if (loc) {
-        const timeDiff = now - locTime;
-        const isFreshLocation = timeDiff <= LOC_STALE_THRESHOLD_MS;
-        if (isFreshLocation) {
-          if (loc.source === "NETWORK") {
-            trackingStatus = "NETWORK LOCATION";
-            statusReason = `Approximate network-based fix (±${Math.round(loc.accuracy)}m)`;
-          } else {
-            trackingStatus = "GPS ACTIVE";
-            statusReason = `Verified GPS satellite fix (±${Math.round(loc.accuracy)}m)`;
-          }
-        } else {
-          trackingStatus = "GPS UNAVAILABLE";
-          statusReason = "Awaiting fresh location fix (previous fix stale)";
-        }
+        trackingStatus = "GPS UNAVAILABLE";
+        statusReason = "Awaiting fresh location fix (previous fix stale)";
       } else {
         trackingStatus = "GPS UNAVAILABLE";
         statusReason = "Awaiting initial location fix from device";
@@ -270,7 +266,7 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
       locationStatus = "TRACKING ACTIVE";
     } else if (!activeDuty) {
       locationStatus = "OFF DUTY";
-    } else if (trackingStatus === "STALE / OFFLINE") {
+    } else if (deviceStatus === "STALE" || trackingStatus === "STALE / OFFLINE") {
       locationStatus = "STALE";
     } else {
       locationStatus = "LOCATION UNAVAILABLE";

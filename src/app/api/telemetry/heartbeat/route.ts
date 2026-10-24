@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { validateDeviceAuthorization } from "@/services/telemetry/ingestion_service";
+import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 
 const heartbeatSchema = z.object({
   personnelId: z.string(),
@@ -43,10 +44,11 @@ export async function POST(req: Request) {
       device = auth.device;
     }
 
-    // Prepare updated device fields
+    // Prepare updated device fields using server-generated timestamp
+    const serverNow = new Date();
     const updateData: any = {
-      lastSeenAt: new Date(),
-      lastHeartbeatAt: parsed.recordedAt,
+      lastSeenAt: serverNow,
+      lastHeartbeatAt: serverNow,
       batteryLevel: parsed.batteryLevel !== undefined ? parsed.batteryLevel : device.batteryLevel,
       networkState: parsed.networkState || device.networkState,
       appVersion: parsed.appVersion || device.appVersion,
@@ -75,6 +77,8 @@ export async function POST(req: Request) {
       where: { id: device.id },
       data: updateData,
     });
+
+    invalidateDashboardCache();
 
     // Detect state changes and log critical events (only on state transition to prevent DB bloat)
     if (parsed.locationEnabled === false && device.locationEnabled !== false) {

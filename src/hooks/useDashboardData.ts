@@ -44,6 +44,8 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
   const activeControllerRef = useRef<AbortController | null>(null);
   const isFetchingRef = useRef(false);
   const lastFetchTimeRef = useRef<number>(0);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const sseFailedRef = useRef(false);
 
   const fetchData = useCallback(async () => {
     // Avoid concurrent overlapping requests
@@ -86,30 +88,103 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
   }, []);
 
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
+    let timeoutId: NodeJS.Timeout | null = null;
     let isMounted = true;
 
-    const pollLoop = async () => {
+    // Polling fallback scheduler
+    const scheduleNextPoll = () => {
       if (!isMounted) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(async () => {
+        if (!isMounted) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          // If SSE is active and healthy, no need to poll
+          if (!eventSourceRef.current || sseFailedRef.current) {
+            await fetchData();
+          }
+        }
+        scheduleNextPoll();
+      }, intervalMs);
+    };
 
-      // Only fetch if tab is visible
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        await fetchData();
+    // SSE connection manager
+    const connectSSE = () => {
+      if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+        sseFailedRef.current = true;
+        fetchData();
+        scheduleNextPoll();
+        return;
       }
 
-      if (isMounted) {
-        timeoutId = setTimeout(pollLoop, intervalMs);
+      if (eventSourceRef.current) {
+        try { eventSourceRef.current.close(); } catch (_) {}
+        eventSourceRef.current = null;
+      }
+
+      try {
+        const es = new EventSource("/api/control-room/overview/sse");
+        eventSourceRef.current = es;
+
+        es.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const parsed = JSON.parse(event.data);
+            setData(parsed);
+            setLastUpdated(new Date());
+            setError(null);
+            setIsLoading(false);
+            sseFailedRef.current = false;
+            lastFetchTimeRef.current = Date.now();
+          } catch (e) {
+            console.error("Error parsing SSE overview:", e);
+          }
+        };
+
+        es.onerror = () => {
+          if (!isMounted) return;
+          // On SSE disconnect/error, smoothly fallback to polling
+          sseFailedRef.current = true;
+          if (eventSourceRef.current) {
+            try { eventSourceRef.current.close(); } catch (_) {}
+            eventSourceRef.current = null;
+          }
+          // Fetch immediately to guarantee fresh data, then poll
+          fetchData();
+          scheduleNextPoll();
+        };
+      } catch (err) {
+        sseFailedRef.current = true;
+        fetchData();
+        scheduleNextPoll();
       }
     };
 
-    pollLoop();
+    // Initial connection:
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      connectSSE();
+      scheduleNextPoll();
+    }
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        // Debounce: only trigger if more than 2 seconds since last fetch
+        // Tab brought to foreground: immediately refresh data & ensure SSE is connected
         const elapsed = Date.now() - lastFetchTimeRef.current;
         if (elapsed > 2000) {
           fetchData();
+        }
+        if (!eventSourceRef.current) {
+          connectSSE();
+        }
+        scheduleNextPoll();
+      } else {
+        // Tab backgrounded: close SSE to prevent serverless stream waste
+        if (eventSourceRef.current) {
+          try { eventSourceRef.current.close(); } catch (_) {}
+          eventSourceRef.current = null;
+        }
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
         }
       }
     };
@@ -118,7 +193,11 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
 
     return () => {
       isMounted = false;
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (eventSourceRef.current) {
+        try { eventSourceRef.current.close(); } catch (_) {}
+        eventSourceRef.current = null;
+      }
       if (activeControllerRef.current) {
         activeControllerRef.current.abort();
       }

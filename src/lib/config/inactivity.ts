@@ -3,15 +3,16 @@
  * Configurable via environment variables with production defaults.
  */
 
-// Heartbeat interval from Android client is 10 seconds.
-// A 1-minute (60s) timeout represents 6 consecutively missed heartbeats.
-export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 1000 * 60; // 60 seconds (1 minute)
+// Heartbeat interval from Android client is 10-15 seconds.
+// Realistic thresholds for mobile networks with 4G/5G handoffs, elevators, and battery saver jitter:
+// 180 seconds (3 minutes) represents ~18 missed 10s heartbeats before OFFLINE
+export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 1000 * 180; // 180 seconds (3 minutes)
 
-// 25 seconds represents 2 missed 10s heartbeats + 5s network latency buffer.
-export const DEFAULT_HEARTBEAT_STALE_MS = 1000 * 25; // 25 seconds
+// 90 seconds represents ~9 missed 10s heartbeats before STALE
+export const DEFAULT_HEARTBEAT_STALE_MS = 1000 * 90; // 90 seconds
 
-// 45 seconds for location telemetry freshness (accommodates 10-second trail recording interval + 35-second buffer).
-export const DEFAULT_LOCATION_STALE_MS = 1000 * 45; // 45 seconds
+// 120 seconds (2 minutes) for location telemetry freshness buffer
+export const DEFAULT_LOCATION_STALE_MS = 1000 * 120; // 120 seconds (2 minutes)
 
 export function getHeartbeatTimeoutMs(): number {
   const envVal = process.env.HEARTBEAT_TIMEOUT_MS;
