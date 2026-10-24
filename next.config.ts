@@ -16,15 +16,15 @@ const nextConfig: NextConfig = {
       default-src 'self';
       script-src 'self' 'unsafe-eval' 'unsafe-inline';
       style-src 'self' 'unsafe-inline';
-      img-src 'self' blob: data: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://server.arcgisonline.com https://*.arcgisonline.com https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://*.google.com https://*.googleapis.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com;
+      img-src 'self' blob: data: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://server.arcgisonline.com https://*.arcgisonline.com https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://*.google.com https://*.googleapis.com https://*.gstatic.com https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com;
       font-src 'self';
       object-src 'none';
       base-uri 'self';
       form-action 'self';
       frame-ancestors 'none';
-      worker-src 'self' blob:;
-      child-src 'self' blob:;
-      connect-src 'self' https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://server.arcgisonline.com https://*.arcgisonline.com https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://*.google.com https://*.googleapis.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com;
+      worker-src 'self' blob: data:;
+      child-src 'self' blob: data:;
+      connect-src 'self' blob: data: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://server.arcgisonline.com https://*.arcgisonline.com https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://*.google.com https://*.googleapis.com https://*.gstatic.com https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com;
     `.replace(/\s{2,}/g, ' ').trim();
 
     return [

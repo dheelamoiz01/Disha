@@ -28,6 +28,23 @@ const MAP_STYLES: Record<MapLayerType, any> = {
   satellite: {
     version: 8,
     sources: {
+      "esri-satellite-backup": {
+        type: "raster",
+        tiles: [
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        attribution: "Tiles &copy; Esri, Maxar, Earthstar Geographics",
+        maxzoom: 19,
+      },
+      "esri-labels-backup": {
+        type: "raster",
+        tiles: [
+          "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+      },
       "satellite-hybrid-tiles": {
         type: "raster",
         tiles: process.env.NEXT_PUBLIC_MAP_TILES_SATELLITE
@@ -40,14 +57,28 @@ const MAP_STYLES: Record<MapLayerType, any> = {
             ],
         tileSize: 256,
         attribution: '&copy; Google Maps &mdash; High-Precision Satellite & Street Labels',
-        maxzoom: 22,
+        maxzoom: 20,
       },
     },
     layers: [
       {
+        id: "esri-satellite-base-layer",
+        type: "raster",
+        source: "esri-satellite-backup",
+        minzoom: 0,
+        maxzoom: 22,
+      },
+      {
         id: "satellite-hybrid-layer",
         type: "raster",
         source: "satellite-hybrid-tiles",
+        minzoom: 0,
+        maxzoom: 22,
+      },
+      {
+        id: "esri-labels-overlay-layer",
+        type: "raster",
+        source: "esri-labels-backup",
         minzoom: 0,
         maxzoom: 22,
       },
@@ -56,6 +87,15 @@ const MAP_STYLES: Record<MapLayerType, any> = {
   streets: {
     version: 8,
     sources: {
+      "osm-streets-backup": {
+        type: "raster",
+        tiles: [
+          "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        ],
+        tileSize: 256,
+        attribution: "&copy; OpenStreetMap contributors",
+        maxzoom: 19,
+      },
       "street-tiles": {
         type: "raster",
         tiles: process.env.NEXT_PUBLIC_MAP_TILES_STREETS
@@ -68,10 +108,17 @@ const MAP_STYLES: Record<MapLayerType, any> = {
             ],
         tileSize: 256,
         attribution: '&copy; Google Maps &mdash; Detailed Street & POI Network',
-        maxzoom: 22,
+        maxzoom: 20,
       },
     },
     layers: [
+      {
+        id: "osm-streets-base-layer",
+        type: "raster",
+        source: "osm-streets-backup",
+        minzoom: 0,
+        maxzoom: 22,
+      },
       {
         id: "street-layer",
         type: "raster",
@@ -201,8 +248,7 @@ export default function TrailMap({
         onMove={(evt) => setViewState(evt.viewState)}
         onLoad={() => setMapLoaded(true)}
         onError={(e) => {
-          console.warn("Trail map tile error:", e);
-          if (layerType !== "streets") setLayerType("streets");
+          console.warn("Trail map tile/layer notice:", e);
         }}
         mapStyle={MAP_STYLES[layerType]}
         mapLib={maplibregl}
