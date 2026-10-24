@@ -149,10 +149,31 @@ class UpdateManager(
 
             val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
             val apkFile = File(updatesDir, "update_${release.versionCode}.apk")
-            if (apkFile.exists()) {
-                apkFile.delete()
-            }
             tempFile = apkFile
+
+            // Check if valid verified APK is already downloaded
+            if (apkFile.exists() && apkFile.length() > 0) {
+                try {
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    apkFile.inputStream().use { input ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            digest.update(buffer, 0, bytesRead)
+                        }
+                    }
+                    val existingChecksum = digest.digest().joinToString("") { "%02x".format(it) }.lowercase()
+                    if (existingChecksum == release.sha256Checksum.trim().lowercase()) {
+                        Log.i(TAG, "Cached APK matches checksum. Skipping download.")
+                        onProgress(DownloadProgressState.ReadyToInstall(apkFile))
+                        return@withContext Result.success(apkFile)
+                    } else {
+                        apkFile.delete()
+                    }
+                } catch (e: Exception) {
+                    apkFile.delete()
+                }
+            }
 
             val request = Request.Builder()
                 .url(downloadUrl)

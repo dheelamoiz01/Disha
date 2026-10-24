@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var updateDialog: AlertDialog? = null
     private var isUpdateCheckInProgress = false
     private var lastUpdateCheckTime = 0L
+    private var pendingApkToInstall: java.io.File? = null
 
     private val locationSettingsLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -133,6 +134,12 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }
         ensureBackendDutyActive()
+
+        if (pendingApkToInstall != null && pendingApkToInstall!!.exists() && updateManager.canRequestPackageInstalls()) {
+            val apk = pendingApkToInstall!!
+            pendingApkToInstall = null
+            updateManager.launchApkInstaller(this, apk)
+        }
 
         if (System.currentTimeMillis() - lastUpdateCheckTime > 5 * 60 * 1000L) {
             checkForAppUpdate(isManual = false)
@@ -671,7 +678,7 @@ class MainActivity : AppCompatActivity() {
             dialog.dismiss()
         }
 
-        dialogBinding.updateButton.setOnClickListener {
+        val startDownloadAction = {
             dialogBinding.updateButton.isEnabled = false
             dialogBinding.laterButton.isEnabled = false
             dialogBinding.progressSection.visibility = View.VISIBLE
@@ -722,6 +729,7 @@ class MainActivity : AppCompatActivity() {
                 if (downloadResult.isSuccess) {
                     val apkFile = downloadResult.getOrNull()
                     if (apkFile != null) {
+                        pendingApkToInstall = apkFile
                         if (!updateManager.canRequestPackageInstalls()) {
                             Toast.makeText(
                                 this@MainActivity,
@@ -735,6 +743,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+
+        dialogBinding.updateButton.setOnClickListener {
+            startDownloadAction()
+        }
+
+        if (release.isMandatory) {
+            startDownloadAction()
         }
 
         updateDialog = dialog
