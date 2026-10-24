@@ -127,6 +127,12 @@ class MainActivity : AppCompatActivity() {
         startContinuousTrackingIfReady()
         updateOperationalState()
         repository.refreshPendingCount()
+        lifecycleScope.launch {
+            try {
+                repository.syncOfflineQueue()
+            } catch (_: Exception) {}
+        }
+        ensureBackendDutyActive()
 
         if (System.currentTimeMillis() - lastUpdateCheckTime > 5 * 60 * 1000L) {
             checkForAppUpdate(isManual = false)
@@ -193,18 +199,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Offline sync queue button
-        binding.syncQueueButton.setOnClickListener {
-            binding.syncQueueButton.isEnabled = false
-            lifecycleScope.launch {
-                val synced = repository.syncOfflineQueue()
-                val message = if (synced > 0) "Synced $synced buffered records!" else "No pending records."
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
-                binding.syncQueueButton.isEnabled = true
-                repository.refreshPendingCount()
-            }
-        }
-
         // Enable Precise Location Button (shown when approximate/coarse-only permission is active)
         binding.btnEnablePreciseLocation.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -239,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         repository.pendingCount.observe(this) { count ->
             if (count > 0) {
                 binding.offlineNoticeCard.visibility = View.VISIBLE
-                binding.offlineNoticeText.text = "Offline: $count updates queued locally"
+                binding.offlineNoticeText.text = "Offline cache: $count updates queued (Auto-syncing in background...)"
             } else {
                 binding.offlineNoticeCard.visibility = View.GONE
             }

@@ -162,21 +162,88 @@ class LocationTrackingService : Service(), LocationListener {
         }
     }
 
+    private var lastNetworkRestoreTriggerMs = 0L
+
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                // When mobile data / Wi-Fi restores, immediately trigger offline queue flush
-                serviceScope.launch {
-                    try {
-                        DishaApplication.instance.repository.syncOfflineQueue()
-                    } catch (_: Exception) {}
+                scheduleNetworkRestore()
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    scheduleNetworkRestore()
                 }
             }
         }
         try {
             cm.registerDefaultNetworkCallback(networkCallback!!)
+        } catch (_: Exception) {}
+    }
+
+    private fun scheduleNetworkRestore() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastNetworkRestoreTriggerMs < 3000L) return // Debounce rapid flapping
+        lastNetworkRestoreTriggerMs = now
+
+        serviceScope.launch {
+            kotlinx.coroutines.delay(600) // Brief delay for socket/DNS routing to stabilize
+            val prefs = DishaApplication.instance.prefs
+            if (!prefs.isLoggedIn) return@launch
+
+            // 1. Drain offline queue completely in batches
+            try {
+                DishaApplication.instance.repository.syncOfflineQueue()
+            } catch (_: Exception) {}
+
+            // 2. Immediately send Heartbeat so dashboard turns device ONLINE instantly
+            try {
+                val battery = getBatteryPercentage()
+                val net = getNetworkType()
+                val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                val locEnabled = if (lm != null) LocationManagerCompat.isLocationEnabled(lm) else false
+                val fineGranted = ContextCompat.checkSelfPermission(
+                    this@LocationTrackingService,
+                    android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                DishaApplication.instance.repository.sendHeartbeat(
+                    batteryLevel = battery,
+                    networkState = net,
+                    appVersion = "1.0.0",
+                    locationEnabled = locEnabled,
+                    permissionState = if (fineGranted) "GRANTED" else "PARTIAL",
+                    isTrackingRunning = isTrackingStarted,
+                    gpsAvailable = lm?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true,
+                    lastGpsFixTime = if (lastGpsLocationTime > 0L) DishaApplication.instance.repository.getIsoTimestamp(Date(lastGpsLocationTime)) else null
+                )
+            } catch (_: Exception) {}
+
+            // 3. Immediately fetch and transmit fresh GPS location fix
+            try {
+                triggerImmediateLocationFetch()
+            } catch (_: Exception) {}
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun triggerImmediateLocationFetch() {
+        if (!hasLocationPermissions()) return
+        try {
+            fusedLocationClient?.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                ?.addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        handleNewLocation(loc, determineLocationSource(loc), forceTransmit = true)
+                    } else {
+                        fusedLocationClient?.lastLocation?.addOnSuccessListener { lastLoc ->
+                            if (lastLoc != null) {
+                                handleNewLocation(lastLoc, determineLocationSource(lastLoc), forceTransmit = true)
+                            }
+                        }
+                    }
+                }
         } catch (_: Exception) {}
     }
 
@@ -367,7 +434,7 @@ class LocationTrackingService : Service(), LocationListener {
         handleNewLocation(location, src)
     }
 
-    private fun handleNewLocation(location: Location, providerSource: String) {
+    private fun handleNewLocation(location: Location, providerSource: String, forceTransmit: Boolean = false) {
         val prefs = DishaApplication.instance.prefs
         if (!prefs.isLoggedIn) {
             stopTracking()
@@ -391,13 +458,13 @@ class LocationTrackingService : Service(), LocationListener {
 
         // 3. Freshness check: Reject stale cached fixes (> 60s elapsed age) if we already have a recent fix
         val ageMs = (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000L
-        if (ageMs > 60_000L && lastLocation != null) {
+        if (ageMs > 60_000L && lastLocation != null && !forceTransmit) {
             return
         }
 
         // 4. Out-of-order check: Reject fixes timestamped older than last known by > 5 seconds
         val prev = lastLocation
-        if (prev != null && location.time < prev.time - 5000L) {
+        if (prev != null && location.time < prev.time - 5000L && !forceTransmit) {
             return
         }
 
@@ -422,7 +489,7 @@ class LocationTrackingService : Service(), LocationListener {
         // Do NOT let a coarse fix (> 20m) displace our verified location on the building!
         val isSos = prefs.isSosActive
         val prevVerified = lastVerifiedLocation
-        if (location.hasAccuracy() && location.accuracy > 20f && prevVerified != null && !isSos) {
+        if (location.hasAccuracy() && location.accuracy > 20f && prevVerified != null && !isSos && !forceTransmit) {
             val verifiedAgeMs = (SystemClock.elapsedRealtimeNanos() - prevVerified.elapsedRealtimeNanos) / 1_000_000L
             if (verifiedAgeMs < 60_000L) {
                 // Keep the verified location as primary, do not let coarse cellular bounce displace it
@@ -459,7 +526,7 @@ class LocationTrackingService : Service(), LocationListener {
         val isAccuracyUpgrade = (lastAcc == null || lastAcc > 25.0f || lastTransmittedSource == "NETWORK") &&
                 (location.hasAccuracy() && location.accuracy <= 20.0f && isGpsFix)
 
-        val isLiveDue = isSos || isFirstDutyPoint || isAccuracyUpgrade || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
+        val isLiveDue = forceTransmit || isSos || isFirstDutyPoint || isAccuracyUpgrade || (elapsedSinceLastLive >= LIVE_TRANSMISSION_INTERVAL_MS)
 
         android.util.Log.i(
             "DishaLocation",

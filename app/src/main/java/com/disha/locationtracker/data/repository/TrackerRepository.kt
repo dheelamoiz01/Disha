@@ -141,77 +141,37 @@ class TrackerRepository(
     }
 
     private suspend fun syncOfflineQueueInternal(): Int {
-        dbHelper.purgeExpiredLocations()
-        val pending = dbHelper.getPendingLocations(limit = 50)
-        if (pending.isEmpty()) return 0
+        var totalSynced = 0
+        var hasMore = true
+        while (hasMore) {
+            dbHelper.purgeExpiredLocations()
+            val pending = dbHelper.getPendingLocations(limit = 50)
+            if (pending.isEmpty()) break
 
-        // In 24×7 mode, all pending offline points are valid.
-        // If legacy restricted hours are enabled, filter out off-hour points.
-        val validPending = if (DutyTimeHelper.enforceRestrictedHours) {
-            pending.filter { item ->
-                try {
-                    val parsed = synchronized(isoDateFormat) { isoDateFormat.parse(item.recordedAt) }
-                    if (parsed != null && !DutyTimeHelper.isWithinDutyWindow(parsed.time)) {
-                        dbHelper.deleteLocationByEventId(item.clientEventId)
-                        false
-                    } else {
+            // In 24×7 mode, all pending offline points are valid.
+            // If legacy restricted hours are enabled, filter out off-hour points.
+            val validPending = if (DutyTimeHelper.enforceRestrictedHours) {
+                pending.filter { item ->
+                    try {
+                        val parsed = synchronized(isoDateFormat) { isoDateFormat.parse(item.recordedAt) }
+                        if (parsed != null && !DutyTimeHelper.isWithinDutyWindow(parsed.time)) {
+                            dbHelper.deleteLocationByEventId(item.clientEventId)
+                            false
+                        } else {
+                            true
+                        }
+                    } catch (_: Exception) {
                         true
                     }
-                } catch (_: Exception) {
-                    true
                 }
+            } else {
+                pending
             }
-        } else {
-            pending
-        }
 
-        if (validPending.isEmpty()) return 0
+            if (validPending.isEmpty()) break
 
-        val payloads = validPending.map { item ->
-            LocationTelemetryPayload(
-                clientEventId = item.clientEventId,
-                latitude = item.latitude,
-                longitude = item.longitude,
-                accuracy = item.accuracy,
-                recordedAt = item.recordedAt,
-                source = item.source,
-                trackingMode = item.trackingMode,
-                batteryLevel = item.batteryLevel,
-                networkState = item.networkState
-            )
-        }
-
-        val request = BatchIngestionRequest(locations = payloads)
-        val result = apiClient.sendBatch(request)
-
-        if (result.isSuccess) {
-            val response = result.getOrNull()
-            var count = 0
-            response?.locations?.forEach { item ->
-                if (item.status == "accepted" || item.status == "deduplicated") {
-                    dbHelper.deleteLocationByEventId(item.clientEventId)
-                    count++
-                } else if (item.status == "rejected") {
-                    // Evict points rejected by backend (e.g. TIMESTAMP_STALE) so they are not retried endlessly
-                    dbHelper.deleteLocationByEventId(item.clientEventId)
-                }
-            }
-            if (count > 0) {
-                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                _lastSentTime.postValue("$timeStr (Synced $count offline)")
-            }
-            return count
-        } else {
-            val errorMsg = result.exceptionOrNull()?.message.orEmpty()
-            if (errorMsg.contains("401") || errorMsg.contains("403")) {
-                prefs.dutyStatus = "OFF_DUTY"
-                LocationTrackingService.stop(DishaApplication.instance)
-                return 0
-            }
-            // Fallback to sequential if batch fails
-            var count = 0
-            for (item in pending.take(10)) {
-                val payload = LocationTelemetryPayload(
+            val payloads = validPending.map { item ->
+                LocationTelemetryPayload(
                     clientEventId = item.clientEventId,
                     latitude = item.latitude,
                     longitude = item.longitude,
@@ -222,20 +182,66 @@ class TrackerRepository(
                     batteryLevel = item.batteryLevel,
                     networkState = item.networkState
                 )
-                val singleResult = apiClient.sendLocation(payload)
-                if (singleResult.isSuccess) {
-                    dbHelper.deleteLocationByEventId(item.clientEventId)
-                    count++
-                } else {
-                    break
+            }
+
+            val request = BatchIngestionRequest(locations = payloads)
+            val result = apiClient.sendBatch(request)
+
+            if (result.isSuccess) {
+                val response = result.getOrNull()
+                var count = 0
+                response?.locations?.forEach { item ->
+                    if (item.status == "accepted" || item.status == "deduplicated") {
+                        dbHelper.deleteLocationByEventId(item.clientEventId)
+                        count++
+                    } else if (item.status == "rejected") {
+                        // Evict points rejected by backend (e.g. TIMESTAMP_STALE) so they are not retried endlessly
+                        dbHelper.deleteLocationByEventId(item.clientEventId)
+                    }
                 }
+                totalSynced += count
+                if (pending.size < 50 || count == 0) {
+                    hasMore = false
+                }
+            } else {
+                val errorMsg = result.exceptionOrNull()?.message.orEmpty()
+                if (errorMsg.contains("401") || errorMsg.contains("403")) {
+                    prefs.dutyStatus = "OFF_DUTY"
+                    LocationTrackingService.stop(DishaApplication.instance)
+                    return totalSynced
+                }
+                // Fallback to sequential if batch fails
+                var count = 0
+                for (item in pending.take(10)) {
+                    val payload = LocationTelemetryPayload(
+                        clientEventId = item.clientEventId,
+                        latitude = item.latitude,
+                        longitude = item.longitude,
+                        accuracy = item.accuracy,
+                        recordedAt = item.recordedAt,
+                        source = item.source,
+                        trackingMode = item.trackingMode,
+                        batteryLevel = item.batteryLevel,
+                        networkState = item.networkState
+                    )
+                    val singleResult = apiClient.sendLocation(payload)
+                    if (singleResult.isSuccess) {
+                        dbHelper.deleteLocationByEventId(item.clientEventId)
+                        count++
+                    } else {
+                        break
+                    }
+                }
+                totalSynced += count
+                hasMore = false
             }
-            if (count > 0) {
-                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                _lastSentTime.postValue("$timeStr (Synced $count offline)")
-            }
-            return count
         }
+
+        if (totalSynced > 0) {
+            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            _lastSentTime.postValue("$timeStr (Synced $totalSynced offline)")
+        }
+        return totalSynced
     }
 
     suspend fun sendHeartbeat(
@@ -262,15 +268,31 @@ class TrackerRepository(
             gpsAvailable = gpsAvailable,
             lastGpsFixTime = lastGpsFixTime
         )
-        val result = apiClient.sendHeartbeat(payload)
-        if (result.isFailure) {
+
+        // Retry transient network errors with exponential backoff & jitter
+        var attempts = 0
+        val maxAttempts = 3
+        var lastSuccess = false
+        while (attempts < maxAttempts) {
+            val result = apiClient.sendHeartbeat(payload)
+            if (result.isSuccess) {
+                lastSuccess = true
+                break
+            }
             val err = result.exceptionOrNull()?.message.orEmpty()
             if (err.contains("401") || err.contains("403")) {
                 prefs.dutyStatus = "OFF_DUTY"
                 LocationTrackingService.stop(DishaApplication.instance)
+                return@withContext false
+            }
+            attempts++
+            if (attempts < maxAttempts) {
+                val jitter = (100..400).random()
+                val backoffMs = (1000L * (1 shl (attempts - 1))) + jitter
+                kotlinx.coroutines.delay(backoffMs)
             }
         }
-        result.isSuccess
+        lastSuccess
     }
 
     suspend fun sendLocationEvent(
