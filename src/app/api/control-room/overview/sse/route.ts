@@ -1,12 +1,14 @@
 import { NextRequest } from "next/server";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { getDashboardOverview } from "@/services/control-room/dashboard_service";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  let user: any;
   try {
-    await requirePermission("LIVE_MAP", req);
+    const auth = await requirePermission("LIVE_MAP", req);
+    user = auth.user;
   } catch (err: any) {
     if (err.message === "UNAUTHORIZED") {
       return new Response("Unauthorized", { status: 401 });
@@ -14,6 +16,7 @@ export async function GET(req: NextRequest) {
     return new Response("Forbidden", { status: 403 });
   }
 
+  const scopedAdminId = isSuperAdmin(user) ? null : user.id;
   const encoder = new TextEncoder();
   let intervalId: NodeJS.Timeout | null = null;
   let isClosed = false;
@@ -23,7 +26,7 @@ export async function GET(req: NextRequest) {
       const sendOverview = async () => {
         if (isClosed) return;
         try {
-          const overview = await getDashboardOverview();
+          const overview = await getDashboardOverview(false, scopedAdminId);
           const message = `data: ${JSON.stringify(overview)}\n\n`;
           controller.enqueue(encoder.encode(message));
         } catch {

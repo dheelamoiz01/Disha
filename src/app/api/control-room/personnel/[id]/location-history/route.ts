@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
+import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/auth/audit";
 import { getStaffLocationTrail } from "@/services/control-room/trail_service";
 
@@ -12,6 +13,17 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
 
     if (!personnelId) {
       return NextResponse.json({ error: "Missing personnel ID" }, { status: 400 });
+    }
+
+    // Ownership check: regular admin can only view location history for their own staff
+    if (!isSuperAdmin(user)) {
+      const staff = await prisma.personnel.findUnique({
+        where: { id: personnelId },
+        select: { adminId: true },
+      });
+      if (!staff || staff.adminId !== user.id) {
+        return NextResponse.json({ error: "Staff member not found or access denied" }, { status: 404 });
+      }
     }
 
     const { searchParams } = new URL(req.url);

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth, requireRole } from "@/lib/auth/authorization";
+import { isSuperAdmin } from "@/lib/auth/permissions";
 import { validateOrigin } from "@/lib/security/csrf";
 import { resolveAlert, AlertError } from "@/services/alert/alert_service";
 
@@ -13,7 +14,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     await requireRole(["CONTROL_ROOM_OFFICER", "DYSP", "SP"]);
     
     const resolvedParams = await params;
-    const result = await resolveAlert(resolvedParams.id, user.id);
+    const result = await resolveAlert(resolvedParams.id, user.id, isSuperAdmin(user));
 
     return NextResponse.json(result);
   } catch (error: any) {

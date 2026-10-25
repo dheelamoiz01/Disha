@@ -9,11 +9,18 @@ export class AlertError extends Error {
   }
 }
 
-export async function acknowledgeAlert(alertId: string, actorId: string) {
-  const alert = await prisma.alert.findUnique({ where: { id: alertId } });
+export async function acknowledgeAlert(alertId: string, actorId: string, isSuper: boolean = false) {
+  const alert = await prisma.alert.findUnique({
+    where: { id: alertId },
+    include: { personnel: { select: { adminId: true } } },
+  });
 
   if (!alert) {
     throw new AlertError("Alert not found.", "NOT_FOUND");
+  }
+
+  if (!isSuper && alert.personnel?.adminId && alert.personnel.adminId !== actorId) {
+    throw new AlertError("Alert not found or access denied.", "NOT_FOUND");
   }
 
   if (alert.status === AlertStatus.RESOLVED) {
@@ -43,11 +50,18 @@ export async function acknowledgeAlert(alertId: string, actorId: string) {
   return { status: "acknowledged", alertId: alert.id };
 }
 
-export async function resolveAlert(alertId: string, actorId: string) {
-  const alert = await prisma.alert.findUnique({ where: { id: alertId } });
+export async function resolveAlert(alertId: string, actorId: string, isSuper: boolean = false) {
+  const alert = await prisma.alert.findUnique({
+    where: { id: alertId },
+    include: { personnel: { select: { adminId: true } } },
+  });
 
   if (!alert) {
     throw new AlertError("Alert not found.", "NOT_FOUND");
+  }
+
+  if (!isSuper && alert.personnel?.adminId && alert.personnel.adminId !== actorId) {
+    throw new AlertError("Alert not found or access denied.", "NOT_FOUND");
   }
 
   if (alert.status === AlertStatus.RESOLVED) {

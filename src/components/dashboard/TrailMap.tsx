@@ -9,6 +9,7 @@ import { formatIST, formatTimeOnlyIST } from "@/lib/utils/time";
 import {
   Crosshair,
   Maximize2,
+  Minimize2,
   Plus,
   Minus,
   MapPin,
@@ -137,6 +138,8 @@ interface TrailMapProps {
   activeIndex: number | null;
   onSelectIndex: (index: number) => void;
   staffName: string;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 export default function TrailMap({
@@ -144,6 +147,8 @@ export default function TrailMap({
   activeIndex,
   onSelectIndex,
   staffName,
+  isFullscreen = false,
+  onToggleFullscreen,
 }: TrailMapProps) {
   const mapRef = useRef<MapRef | null>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -227,6 +232,16 @@ export default function TrailMap({
       fitTrailBounds();
     }
   }, [mapLoaded, validLocations, fitTrailBounds]);
+
+  // Resize and invalidate map canvas on fullscreen transition
+  useEffect(() => {
+    const t1 = setTimeout(() => mapRef.current?.resize(), 60);
+    const t2 = setTimeout(() => mapRef.current?.resize(), 260);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [isFullscreen]);
 
   // Smooth ease-to when active playback point changes
   useEffect(() => {
@@ -444,11 +459,11 @@ export default function TrailMap({
         )}
       </Map>
 
-      {/* Floating Header Info Pill - Top Left */}
-      <div className="absolute left-3 top-3 z-10 flex items-center gap-2 pointer-events-none">
+      {/* Top Left Header Pill - Responsive (hidden on narrow mobile to avoid overlap) */}
+      <div className="absolute left-3 top-3 z-10 hidden sm:flex items-center gap-2 pointer-events-none">
         <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/95 px-3 py-1.5 text-xs font-bold text-slate-200 shadow-xl backdrop-blur-md">
           <Compass size={15} className="text-sky-400" />
-          <span>Trail Map &bull; {staffName}</span>
+          <span className="truncate max-w-[160px] md:max-w-[240px]">Trail Map &bull; {staffName}</span>
         </div>
         <div className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/95 px-2.5 py-1.5 text-xs font-semibold text-slate-300 shadow-xl backdrop-blur-md">
           <span className="h-2 w-2 rounded-full bg-emerald-400" />
@@ -456,52 +471,86 @@ export default function TrailMap({
         </div>
       </div>
 
-      {/* Map Layer Switcher - Top Right */}
-      <div className="absolute right-3 top-3 z-10 flex items-center bg-slate-900/95 border border-slate-700/80 rounded-xl p-1 shadow-2xl backdrop-blur-md">
-        <button
-          type="button"
-          onClick={() => setLayerType("streets")}
-          className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-            layerType === "streets"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:text-white hover:bg-slate-800"
-          }`}
-        >
-          Streets
-        </button>
-        <button
-          type="button"
-          onClick={() => setLayerType("navigation")}
-          className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-            layerType === "navigation"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:text-white hover:bg-slate-800"
-          }`}
-        >
-          Navigation
-        </button>
-        <button
-          type="button"
-          onClick={() => setLayerType("satellite")}
-          className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-            layerType === "satellite"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:text-white hover:bg-slate-800"
-          }`}
-        >
-          Satellite
-        </button>
-        <button
-          type="button"
-          onClick={() => setLayerType("dark")}
-          className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-            layerType === "dark"
-              ? "bg-sky-600 text-white shadow-sm"
-              : "text-slate-300 hover:text-white hover:bg-slate-800"
-          }`}
-        >
-          Dark
-        </button>
+      {/* Top Right Controls: Map Layer Switcher & Full Screen Toggle */}
+      <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+        <div className="flex items-center bg-slate-900/95 border border-slate-700/80 rounded-xl p-1 shadow-2xl backdrop-blur-md">
+          <button
+            type="button"
+            onClick={() => setLayerType("streets")}
+            className={`px-2 sm:px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              layerType === "streets"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-300 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Streets
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayerType("navigation")}
+            className={`px-2 sm:px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              layerType === "navigation"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-300 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Navigation
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayerType("satellite")}
+            className={`px-2 sm:px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              layerType === "satellite"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-300 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Satellite
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayerType("dark")}
+            className={`px-2 sm:px-2.5 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              layerType === "dark"
+                ? "bg-sky-600 text-white shadow-sm"
+                : "text-slate-300 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            Dark
+          </button>
+        </div>
+
+        {onToggleFullscreen && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFullscreen();
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            aria-label={isFullscreen ? "Exit Full Screen" : "Full Screen"}
+            title={isFullscreen ? "Exit Full Screen (Esc)" : "Full Screen Map"}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border text-xs font-bold shadow-2xl backdrop-blur-md transition-all active:scale-95 cursor-pointer whitespace-nowrap ${
+              isFullscreen
+                ? "border-rose-500/80 bg-rose-950/80 hover:bg-rose-900 text-rose-200"
+                : "border-sky-500/80 bg-sky-950/80 hover:bg-sky-900 text-sky-200"
+            }`}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 size={15} className="text-rose-400 flex-shrink-0" />
+                <span className="hidden xs:inline sm:inline">Exit Full Screen</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 size={15} className="text-sky-400 flex-shrink-0" />
+                <span className="hidden xs:inline sm:inline">Full Screen</span>
+              </>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Floating Control Stack - Bottom Right */}

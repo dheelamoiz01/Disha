@@ -69,6 +69,81 @@ export default function LocationTrailClient({
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const playbackTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Fullscreen State and Element Reference
+  const mapWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState(false);
+
+  const enterFullscreen = useCallback(async () => {
+    const el = mapWrapperRef.current;
+    if (!el) return;
+
+    if (document.fullscreenEnabled && el.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+        setIsFullscreen(true);
+        setIsCssFullscreen(false);
+      } catch (err) {
+        console.warn("Native fullscreen denied or unsupported, using CSS fallback:", err);
+        setIsCssFullscreen(true);
+        setIsFullscreen(true);
+      }
+    } else {
+      setIsCssFullscreen(true);
+      setIsFullscreen(true);
+    }
+  }, []);
+
+  const exitFullscreen = useCallback(async () => {
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch (err) {
+        console.warn("Failed to exit native fullscreen:", err);
+      }
+    }
+    setIsCssFullscreen(false);
+    setIsFullscreen(false);
+  }, []);
+
+  const handleToggleFullscreen = useCallback(() => {
+    if (isFullscreen) {
+      exitFullscreen();
+    } else {
+      enterFullscreen();
+    }
+  }, [isFullscreen, enterFullscreen, exitFullscreen]);
+
+  // Synchronize fullscreen state on browser native controls or Escape key
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isDocFs = Boolean(
+        document.fullscreenElement || (document as any).webkitFullscreenElement
+      );
+      if (!isDocFs && !isCssFullscreen) {
+        setIsFullscreen(false);
+      } else if (isDocFs) {
+        setIsFullscreen(true);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isFullscreen) {
+        exitFullscreen();
+      }
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isFullscreen, isCssFullscreen, exitFullscreen]);
+
   // Fetch all staff personnel for selector
   useEffect(() => {
     let isMounted = true;
@@ -251,7 +326,7 @@ export default function LocationTrailClient({
   return (
     <div className="flex-1 flex flex-col w-full h-full bg-slate-950 overflow-hidden relative">
       {/* Top Filter & Selector Bar */}
-      <div className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md px-3 sm:px-6 py-3 flex-shrink-0 z-20">
+      <div className={isFullscreen ? "hidden" : "border-b border-slate-800 bg-slate-900/80 backdrop-blur-md px-3 sm:px-6 py-3 flex-shrink-0 z-20"}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5 sm:gap-4 flex-1 min-w-[280px]">
             {/* Staff Selector */}
@@ -353,7 +428,7 @@ export default function LocationTrailClient({
       {/* Main Trail Workspace: Map (Left/Center) + Sidebar Panel (Right) */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         {/* Map View */}
-        <div className="flex-1 h-[55%] lg:h-full relative overflow-hidden">
+        <div ref={mapWrapperRef} className={isFullscreen ? "fixed inset-0 z-50 h-[100dvh] w-[100dvw] bg-slate-950 flex flex-col overflow-hidden pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]" : "flex-1 h-[55%] lg:h-full relative overflow-hidden"}>
           <TrailMap
             locations={locations}
             activeIndex={currentIndex}
@@ -362,6 +437,8 @@ export default function LocationTrailClient({
               setIsPlaying(false);
             }}
             staffName={selectedOfficer?.name || trailData?.personnel?.name || "Staff Member"}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={handleToggleFullscreen}
           />
 
           {/* Bottom Floating Playback Scrubber on Map */}
@@ -461,7 +538,7 @@ export default function LocationTrailClient({
         </div>
 
         {/* Right Sidebar: Summary Cards & Timeline List */}
-        <div className="h-[45%] lg:h-full lg:w-[380px] xl:w-[420px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900/40 backdrop-blur-md flex flex-col flex-shrink-0 overflow-hidden">
+        <div className={isFullscreen ? "hidden" : "h-[45%] lg:h-full lg:w-[380px] xl:w-[420px] border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900/40 backdrop-blur-md flex flex-col flex-shrink-0 overflow-hidden"}>
           {/* Daily Route Summary */}
           {trailData?.summary && (
             <div className="p-4 border-b border-slate-800/80 bg-slate-950/50 flex-shrink-0">

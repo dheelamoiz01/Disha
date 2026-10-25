@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { UserRole, UserStatus } from "../../../../generated/prisma/enums";
@@ -21,8 +21,9 @@ const createStaffSchema = z.object({
 
 export async function GET(req: Request) {
   try {
-    await requirePermission("STAFF_MANAGEMENT", req);
-    const staff = await fetchStaffList();
+    const { user } = await requirePermission("STAFF_MANAGEMENT", req);
+    const scopedAdminId = isSuperAdmin(user) ? null : user.id;
+    const staff = await fetchStaffList(scopedAdminId);
     return NextResponse.json({ staff });
   } catch (error: any) {
     if (error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -82,6 +83,7 @@ export async function POST(req: Request) {
             unit: data.unit || null,
             phone: data.phone || null,
             active: data.status === "ACTIVE",
+            adminId: currentAdmin.id,
           },
         },
       },
@@ -103,6 +105,7 @@ export async function POST(req: Request) {
       staff: {
         id: newUser.personnel!.id,
         userId: newUser.id,
+        adminId: newUser.personnel!.adminId,
         username: newUser.username,
         name: newUser.personnel!.name,
         personnelCode: newUser.personnel!.personnelCode,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { UserStatus } from "../../../../../generated/prisma/enums";
 import { logAudit } from "@/lib/auth/audit";
@@ -30,6 +30,11 @@ export async function PATCH(req: Request, props: { params: Promise<{ id: string 
 
     if (!personnel) {
       return NextResponse.json({ error: "Staff record not found" }, { status: 404 });
+    }
+
+    // Ownership check: regular admin can only modify their own staff
+    if (!isSuperAdmin(currentAdmin) && personnel.adminId !== currentAdmin.id) {
+      return NextResponse.json({ error: "Staff record not found or access denied" }, { status: 404 });
     }
 
     // Check personnelCode conflict if changed
@@ -115,6 +120,11 @@ export async function DELETE(req: Request, props: { params: Promise<{ id: string
 
     if (!personnel) {
       return NextResponse.json({ error: "Staff record not found" }, { status: 404 });
+    }
+
+    // Ownership check: regular admin can only modify their own staff
+    if (!isSuperAdmin(currentAdmin) && personnel.adminId !== currentAdmin.id) {
+      return NextResponse.json({ error: "Staff record not found or access denied" }, { status: 404 });
     }
 
     const deviceIds = personnel.devices.map((d) => d.id);

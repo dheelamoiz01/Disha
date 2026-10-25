@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { getDashboardOverview } from "@/services/control-room/dashboard_service";
 
 export async function GET(req: Request) {
   try {
-    await requirePermission("LIVE_MAP", req);
-    
-    const data = await getDashboardOverview();
+    const { user } = await requirePermission("LIVE_MAP", req);
+    const scopedAdminId = isSuperAdmin(user) ? null : user.id;
+    const data = await getDashboardOverview(false, scopedAdminId);
     return NextResponse.json(data);
   } catch (error: any) {
     if (error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

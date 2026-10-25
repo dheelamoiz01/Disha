@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { getHeartbeatTimeoutMs } from "@/lib/config/inactivity";
 
-export async function fetchStaffList() {
+export async function fetchStaffList(scopedAdminId?: string | null) {
   const now = Date.now();
   const timeoutMs = getHeartbeatTimeoutMs();
 
-  // Single efficient query selecting only required columns and avoiding full-table scans
+  // Single efficient query selecting only required columns and scoped to owning admin if not superadmin
   const staffList = await prisma.personnel.findMany({
+    where: scopedAdminId ? { adminId: scopedAdminId } : undefined,
     include: {
       user: {
         select: {
@@ -66,6 +67,7 @@ export async function fetchStaffList() {
     return {
       id: p.id,
       userId: p.userId,
+      adminId: p.adminId,
       username: p.user.username,
       name: p.name,
       personnelCode: p.personnelCode,

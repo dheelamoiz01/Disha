@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(req: Request) {
   try {
-    await requirePermission("LIVE_MAP", req);
+    const { user } = await requirePermission("LIVE_MAP", req);
 
     const personnelList = await prisma.personnel.findMany({
+      where: isSuperAdmin(user) ? undefined : { adminId: user.id },
       orderBy: [
         { active: "desc" },
         { name: "asc" },

@@ -10,15 +10,21 @@ import {
   isSameDayIST,
 } from "@/lib/utils/duty_window";
 
-// Short-lived in-memory cache to coalesce rapid concurrent requests (e.g. multiple open dashboard tabs)
-let cachedOverview: { data: any[]; timestamp: number } | null = null;
+// Short-lived in-memory cache partitioned by scope to prevent cross-admin data leakage
+const cachedOverviewMap = new Map<string, { data: any[]; timestamp: number }>();
 const CACHE_TTL_MS = 2000; // 2 seconds
 
-export function invalidateDashboardCache() {
-  cachedOverview = null;
+export function invalidateDashboardCache(scopedAdminId?: string) {
+  if (scopedAdminId) {
+    cachedOverviewMap.delete(scopedAdminId);
+    cachedOverviewMap.delete("GLOBAL");
+  } else {
+    cachedOverviewMap.clear();
+  }
 }
 
-export async function getDashboardOverview(forceFresh: boolean = false) {
+export async function getDashboardOverview(forceFresh: boolean = false, scopedAdminId?: string | null) {
+  const scopeKey = scopedAdminId || "GLOBAL";
   const dutyNow = getDutyCurrentTime();
   const now = dutyNow.getTime();
   const isDutyHours = isWithinDutyWindowIST(dutyNow);
@@ -27,17 +33,21 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
     process.env.DISABLE_CACHE === "1" ||
     process.argv.some((a) => a.includes("test"));
 
-  if (!isTest && !forceFresh && cachedOverview && now - cachedOverview.timestamp < CACHE_TTL_MS) {
-    return cachedOverview.data;
+  const cached = cachedOverviewMap.get(scopeKey);
+  if (!isTest && !forceFresh && cached && now - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
   }
 
   const LOC_STALE_THRESHOLD_MS = getLocationStaleMs(); // 7 mins default (5-min interval + 2-min buffer)
   const HB_TIMEOUT_MS = getHeartbeatTimeoutMs(); // 2 mins default
   const HB_STALE_THRESHOLD_MS = getHeartbeatStaleMs(); // 75 secs default
 
-  // Single efficient query using indexed filters and selecting ONLY necessary columns
+  // Single efficient query using indexed filters and selecting ONLY necessary columns, scoped to owning admin
   const personnelList = await prisma.personnel.findMany({
-    where: { active: true },
+    where: {
+      active: true,
+      ...(scopedAdminId ? { adminId: scopedAdminId } : {}),
+    },
     select: {
       id: true,
       name: true,
@@ -335,10 +345,10 @@ export async function getDashboardOverview(forceFresh: boolean = false) {
     };
   });
 
-  cachedOverview = {
+  cachedOverviewMap.set(scopeKey, {
     data: result,
     timestamp: now,
-  };
+  });
 
   return result;
 }

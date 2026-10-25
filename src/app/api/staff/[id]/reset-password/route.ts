@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, isSuperAdmin } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { logAudit } from "@/lib/auth/audit";
@@ -25,6 +25,11 @@ export async function POST(req: Request, props: { params: Promise<{ id: string }
 
     if (!personnel) {
       return NextResponse.json({ error: "Staff record not found" }, { status: 404 });
+    }
+
+    // Ownership check: regular admin can only reset password for their own staff
+    if (!isSuperAdmin(currentAdmin) && personnel.adminId !== currentAdmin.id) {
+      return NextResponse.json({ error: "Staff record not found or access denied" }, { status: 404 });
     }
 
     const passwordHash = await hashPassword(newPassword);

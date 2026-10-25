@@ -37,6 +37,7 @@ model User {
   mustChangePassword Boolean    @default(false)
 
   personnel Personnel?
+  createdStaff Personnel[] @relation("AdminStaff")
   sessions  Session[]
   ackedAlerts Alert[] @relation("AlertAck")
   resAlerts   Alert[] @relation("AlertRes")
@@ -48,6 +49,7 @@ model User {
 model Personnel {
   id             String @id @default(cuid())
   userId         String @unique
+  adminId        String?
   personnelCode  String @unique
   name           String
   designation    String?
@@ -56,6 +58,7 @@ model Personnel {
   active         Boolean @default(true)
 
   user    User     @relation(fields: [userId], references: [id])
+  admin   User?    @relation("AdminStaff", fields: [adminId], references: [id])
   devices Device[]
   dutySessions DutySession[]
   locations Location[]
@@ -68,6 +71,7 @@ model Personnel {
   updatedAt DateTime @updatedAt
 
   @@index([active])
+  @@index([adminId])
 }
 
 model Device {
