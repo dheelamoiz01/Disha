@@ -43,6 +43,14 @@ export async function fetchStaffList(scopedAdminId?: string | null) {
           startedAt: true,
         },
       },
+      admin: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          role: true,
+        },
+      },
     },
     orderBy: { createdAt: "desc" },
     take: 500,
@@ -94,6 +102,14 @@ export async function fetchStaffList(scopedAdminId?: string | null) {
             id: p.dutySessions[0].id,
             status: p.dutySessions[0].status,
             startedAt: p.dutySessions[0].startedAt.toISOString(),
+          }
+        : null,
+      admin: p.admin
+        ? {
+            id: p.admin.id,
+            username: p.admin.username,
+            displayName: p.admin.displayName || p.admin.username,
+            role: p.admin.role,
           }
         : null,
       createdAt: p.createdAt.toISOString(),

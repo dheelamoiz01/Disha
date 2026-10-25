@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
-import { hasPermission } from "@/lib/auth/permissions";
+import { hasPermission, isSuperAdmin } from "@/lib/auth/permissions";
 import LiveMapClient from "@/components/dashboard/LiveMapClient";
 import { getDashboardOverview } from "@/services/control-room/dashboard_service";
 
@@ -15,7 +15,8 @@ export default async function LiveMapPage() {
     redirect("/dashboard");
   }
 
-  const initialData = await getDashboardOverview();
+  const scopedAdminId = isSuperAdmin(user) ? null : user.id;
+  const initialData = await getDashboardOverview(false, scopedAdminId);
 
   return <LiveMapClient initialData={initialData} />;
 }

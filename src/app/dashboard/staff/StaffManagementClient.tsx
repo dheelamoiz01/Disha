@@ -29,6 +29,13 @@ import { formatIST } from "@/lib/utils/time";
 export type StaffMember = {
   id: string;
   userId: string;
+  adminId?: string | null;
+  admin?: {
+    id: string;
+    username: string;
+    displayName: string;
+    role: string;
+  } | null;
   username: string;
   name: string;
   personnelCode: string;
@@ -319,6 +326,11 @@ export default function StaffManagementClient({ initialStaff }: { initialStaff?:
                           <div className="font-bold text-white flex items-center gap-1.5">
                             <span>{staff.name}</span>
                           </div>
+                          {staff.admin && (
+                            <div className="text-[10px] text-sky-400 font-mono flex items-center gap-1 mt-0.5">
+                              <span className="text-slate-500">Admin:</span> @{staff.admin.username}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>

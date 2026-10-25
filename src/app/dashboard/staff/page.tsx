@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth/session";
-import { hasPermission } from "@/lib/auth/permissions";
+import { hasPermission, isSuperAdmin } from "@/lib/auth/permissions";
 import StaffManagementClient from "./StaffManagementClient";
 import { fetchStaffList } from "@/services/staff/staff_service";
 
@@ -15,7 +15,8 @@ export default async function StaffManagementPage() {
     redirect("/dashboard");
   }
 
-  const initialStaff = await fetchStaffList();
+  const scopedAdminId = isSuperAdmin(user) ? null : user.id;
+  const initialStaff = await fetchStaffList(scopedAdminId);
 
   return <StaffManagementClient initialStaff={initialStaff} />;
 }
