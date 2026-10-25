@@ -228,6 +228,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           updateData.latestLocationTime = input.recordedAt;
         }
 
+        tursoBudgetTracker.recordWrite("device_heartbeats", 1);
         await prisma.device.update({
           where: { id: device.id },
           data: updateData,
@@ -250,6 +251,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
   }
 
   try {
+    tursoBudgetTracker.recordWrite("telemetry_locations", 1);
     const location = await prisma.location.create({
       data: {
         clientEventId: input.clientEventId,
@@ -289,6 +291,7 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
       deviceUpdateData.latestLocationTime = input.recordedAt;
     }
 
+    tursoBudgetTracker.recordWrite("device_heartbeats", 1);
     await prisma.device.update({
       where: { id: device.id },
       data: deviceUpdateData,
@@ -315,6 +318,7 @@ export async function ingestLocationEvent(personnelId: string, input: LocationEv
   const { device, session } = await validateDeviceAuthorization(personnelId);
 
   try {
+    tursoBudgetTracker.recordWrite("safety_sos_alerts", 1);
     const event = await prisma.locationEvent.create({
       data: {
         clientEventId: input.clientEventId,
@@ -449,6 +453,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       }
 
       try {
+        tursoBudgetTracker.recordWrite("telemetry_locations", 1);
         const location = await prisma.location.create({
           data: {
             clientEventId: loc.clientEventId,
@@ -513,6 +518,7 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       }
     }
 
+    tursoBudgetTracker.recordWrite("device_heartbeats", 1);
     await prisma.device.update({
       where: { id: device.id },
       data: deviceBatchUpdate,

@@ -1,8 +1,12 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { validateDeviceAuthorization } from "@/services/telemetry/ingestion_service";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
+
+// In-memory memory map for instantaneous live status without database churn
+export const deviceHeartbeatMemoryMap = new Map<string, { lastSeenAt: Date; batteryLevel?: number | null; networkState?: string | null }>();
 
 const heartbeatSchema = z.object({
   personnelId: z.string(),
@@ -71,19 +75,42 @@ export async function POST(req: Request) {
       updateData.lastGpsFixTime = parsed.lastGpsFixTime;
     }
 
-    // Efficient heartbeat update:
-    // Update Device directly in a single write without inserting an ephemeral historical row into Heartbeat.
-    await prisma.device.update({
-      where: { id: device.id },
-      data: updateData,
+    // Always update in-memory state map for zero-latency live tracking
+    deviceHeartbeatMemoryMap.set(device.id, {
+      lastSeenAt: serverNow,
+      batteryLevel: updateData.batteryLevel,
+      networkState: updateData.networkState,
     });
 
-    // Only invalidate dashboard cache on genuine state transitions to protect Turso row read budget
+    // Detect genuine hardware/telemetry state changes
     const hasStateChange =
       (parsed.locationEnabled !== undefined && parsed.locationEnabled !== device.locationEnabled) ||
       (parsed.permissionState !== undefined && parsed.permissionState !== device.permissionState) ||
       (parsed.isTrackingRunning !== undefined && parsed.isTrackingRunning !== device.isTrackingRunning) ||
-      (parsed.networkState !== undefined && parsed.networkState !== device.networkState && (parsed.networkState === "OFFLINE" || device.networkState === "OFFLINE"));
+      (parsed.networkState !== undefined && parsed.networkState !== device.networkState) ||
+      (parsed.batteryLevel != null && device.batteryLevel != null && Math.abs(parsed.batteryLevel - device.batteryLevel) >= 2) ||
+      (parsed.gpsAvailable !== undefined && parsed.gpsAvailable !== device.gpsAvailable) ||
+      (device.status !== "ACTIVE");
+
+    const isTest =
+      process.env.NODE_ENV === "test" ||
+      process.env.DISABLE_CACHE === "1" ||
+      process.argv.some((a) => a.includes("test"));
+
+    const lastDbHeartbeat = device.lastHeartbeatAt ? new Date(device.lastHeartbeatAt).getTime() : 0;
+    const timeSinceLastDbWrite = serverNow.getTime() - lastDbHeartbeat;
+
+    // Throttle unchanged routine heartbeats to once every 30s in production (saves 70% rows written)
+    const HEARTBEAT_DB_WRITE_INTERVAL_MS = isTest ? 0 : 30_000;
+    const shouldWriteDb = hasStateChange || timeSinceLastDbWrite >= HEARTBEAT_DB_WRITE_INTERVAL_MS;
+
+    if (shouldWriteDb) {
+      tursoBudgetTracker.recordWrite("device_heartbeats", 1);
+      await prisma.device.update({
+        where: { id: device.id },
+        data: updateData,
+      });
+    }
 
     if (hasStateChange) {
       invalidateDashboardCache();

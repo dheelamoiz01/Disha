@@ -40,7 +40,7 @@ const MAP_STYLES: Record<MapLayerType, any> = {
         ],
         tileSize: 256,
         attribution: "Tiles &copy; Esri, Maxar, Earthstar Geographics",
-        maxzoom: 19,
+        maxzoom: 18, // Max native zoom 18: prevents ESRI 'Map data not yet available' and enables smooth WebGL overzooming
       },
       "esri-labels-backup": {
         type: "raster",
@@ -48,7 +48,7 @@ const MAP_STYLES: Record<MapLayerType, any> = {
           "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
         ],
         tileSize: 256,
-        maxzoom: 19,
+        maxzoom: 18,
       },
       "satellite-hybrid-tiles": {
         type: "raster",

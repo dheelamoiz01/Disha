@@ -5,16 +5,19 @@ import { getDashboardOverview, invalidateDashboardCache } from "../src/services/
 import { getStaffLocationTrail } from "../src/services/control-room/trail_service";
 import {
   tursoBudgetTracker,
-  THRESHOLDS,
+  READ_THRESHOLDS,
+  WRITE_THRESHOLDS,
   TURSO_BASELINE,
 } from "../src/lib/turso/budget";
 import {
   validateDeviceAuthorization,
   ingestSingleLocation,
+  ingestBatch,
   invalidateDeviceAuthorizationCache,
 } from "../src/services/telemetry/ingestion_service";
+import { deviceHeartbeatMemoryMap } from "../src/app/api/telemetry/heartbeat/route";
 
-test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
+test("Turso Rows Read 100M and Rows Written 5M Budget & Dual Optimization Suite", async (t) => {
   const testId = `opt_${Date.now()}`;
   let adminA: any;
   let adminB: any;
@@ -183,14 +186,14 @@ test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
       },
     });
 
-    // A. Full trail query for that window returns all 3 points
+    // Full trail query returns all 3 points
     const fullTrail = await getStaffLocationTrail(staffA.id, {
       startTime: new Date(baseTime.getTime() - 1000),
       endTime: new Date(baseTime.getTime() + 30_000),
     });
     assert.strictEqual(fullTrail.locations.length, 3, "Full trail returns all 3 points");
 
-    // B. Incremental trail query with since = loc2.recordedAt returns ONLY loc3
+    // Incremental trail query with since = loc2.recordedAt returns ONLY loc3
     const incrementalTrail = await getStaffLocationTrail(staffA.id, {
       startTime: new Date(baseTime.getTime() - 1000),
       endTime: new Date(baseTime.getTime() + 30_000),
@@ -201,7 +204,7 @@ test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
     assert.strictEqual(incrementalTrail.locations.length, 1, "Only 1 new location after loc2");
     assert.strictEqual(incrementalTrail.locations[0].id, loc3.id, "Returned location is loc3");
 
-    // C. Incremental trail query with since = loc3.recordedAt returns 0 new points
+    // Incremental trail query with since = loc3.recordedAt returns 0 new points
     const emptyIncremental = await getStaffLocationTrail(staffA.id, {
       startTime: new Date(baseTime.getTime() - 1000),
       endTime: new Date(baseTime.getTime() + 30_000),
@@ -210,35 +213,108 @@ test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
     assert.strictEqual(emptyIncremental.locations.length, 0, "No new points returned");
   });
 
-  await t.test("4. 100M Monthly Budget Tracker and Throttling Guarantees", async () => {
-    // Check initial budget report
+  await t.test("4. Rows Written: Idempotent Batch Queue Submission avoids duplicate writes", async () => {
+    const queueTime = new Date("2026-10-25T11:00:00Z");
+    const clientEventId = `evt-queue-dup-${testId}`;
+
+    const batchInput = {
+      locations: [
+        {
+          clientEventId,
+          latitude: 22.84,
+          longitude: 74.26,
+          accuracy: 8.0,
+          recordedAt: queueTime,
+          source: "GPS" as const,
+        },
+      ],
+    };
+
+    // First submission: accepted
+    const firstRes = await ingestBatch(staffA.id, batchInput);
+    assert.strictEqual(firstRes.locations[0].status, "accepted");
+
+    // Count rows in Location table
+    const countBefore = await prisma.location.count({
+      where: { clientEventId },
+    });
+    assert.strictEqual(countBefore, 1, "Exactly one row exists");
+
+    // Second duplicate submission: deduplicated without creating a duplicate row
+    const secondRes = await ingestBatch(staffA.id, batchInput);
+    assert.strictEqual(secondRes.locations[0].status, "deduplicated");
+
+    const countAfter = await prisma.location.count({
+      where: { clientEventId },
+    });
+    assert.strictEqual(countAfter, 1, "Duplicate submission does NOT insert another row");
+  });
+
+  await t.test("5. Rows Written: Repeated unchanged heartbeats update memory state without table bloat", async () => {
+    const { POST: heartbeatHandler } = await import("../src/app/api/telemetry/heartbeat/route");
+    const hbTime = new Date();
+
+    const req = new Request("http://localhost:3000/api/telemetry/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        personnelId: staffA.id,
+        batteryLevel: 85,
+        networkState: "ONLINE",
+        locationEnabled: true,
+        permissionState: "GRANTED",
+        isTrackingRunning: true,
+        gpsAvailable: true,
+        recordedAt: hbTime.toISOString(),
+      }),
+    });
+
+    const res = await heartbeatHandler(req);
+    assert.strictEqual(res.status, 200);
+
+    // Verify in-memory heartbeat map was updated instantaneously
+    assert.ok(deviceHeartbeatMemoryMap.has(deviceA.id), "Memory map has device");
+    const memRecord = deviceHeartbeatMemoryMap.get(deviceA.id);
+    assert.strictEqual(memRecord?.batteryLevel, 85);
+    assert.strictEqual(memRecord?.networkState, "ONLINE");
+
+    // Verify zero historical rows created in Heartbeat table
+    const hbCount = await prisma.heartbeat.count({
+      where: { deviceId: deviceA.id },
+    });
+    assert.strictEqual(hbCount, 0, "No historical Heartbeat rows inserted on routine heartbeat");
+  });
+
+  await t.test("6. 100M Read & 5M Write Monthly Budget Tracker with Multi-Tier Alerts", async () => {
+    // Normal state
     const reportNormal = tursoBudgetTracker.getBudgetReport();
-    assert.strictEqual(reportNormal.thresholds.MAX_LIMIT_100M, 100_000_000);
-    assert.strictEqual(reportNormal.baseline.cumulativeRowsRead, TURSO_BASELINE.cumulativeRowsRead);
+    assert.strictEqual(reportNormal.reads.targetLimitMonthly, READ_THRESHOLDS.MAX_LIMIT_100M);
+    assert.strictEqual(reportNormal.writes.targetLimitMonthly, WRITE_THRESHOLDS.MAX_LIMIT_5M);
     assert.strictEqual(reportNormal.throttling.essentialTrackingGuaranteed, true);
     assert.strictEqual(reportNormal.throttling.heartbeatGuaranteed, true);
     assert.strictEqual(reportNormal.throttling.authenticationGuaranteed, true);
     assert.strictEqual(reportNormal.throttling.sosSafetyGuaranteed, true);
 
-    // Test simulation: inject elevated usage (86 Million rows)
-    tursoBudgetTracker.setMockUsageOffset(86_000_000);
+    // Test simulation: inject elevated write usage (4.3 Million writes = 86%)
+    tursoBudgetTracker.setMockUsageOffset(10_000_000, 4_300_000);
     const reportElevated = tursoBudgetTracker.getBudgetReport();
-    assert.strictEqual(reportElevated.status, "ELEVATED", "Status becomes ELEVATED at 86M");
-    assert.strictEqual(reportElevated.throttling.throttleOptionalReports, true, "Throttles heavy reports");
-    assert.strictEqual(reportElevated.throttling.essentialTrackingGuaranteed, true, "Essential tracking protected");
+    assert.strictEqual(reportElevated.writes.status, "ELEVATED", "Writes status becomes ELEVATED at 4.3M");
+    assert.strictEqual(reportElevated.status, "ELEVATED", "Overall status elevates");
+    assert.strictEqual(reportElevated.throttling.throttleOptionalReports, true);
+    assert.strictEqual(reportElevated.throttling.essentialTrackingGuaranteed, true);
 
-    // Test simulation: inject critical usage (96 Million rows)
-    tursoBudgetTracker.setMockUsageOffset(96_000_000);
+    // Test simulation: inject critical write usage (4.8 Million writes = 96%)
+    tursoBudgetTracker.setMockUsageOffset(10_000_000, 4_800_000);
     const reportCritical = tursoBudgetTracker.getBudgetReport();
-    assert.strictEqual(reportCritical.status, "CRITICAL", "Status becomes CRITICAL at 96M");
-    assert.strictEqual(reportCritical.throttling.throttleNonessentialRefreshes, true, "Nonessential refreshes throttled");
-    assert.strictEqual(reportCritical.throttling.heartbeatGuaranteed, true, "Heartbeats strictly guaranteed");
+    assert.strictEqual(reportCritical.writes.status, "CRITICAL", "Writes status becomes CRITICAL at 4.8M");
+    assert.strictEqual(reportCritical.throttling.throttleNonessentialRefreshes, true);
+    assert.strictEqual(reportCritical.throttling.heartbeatGuaranteed, true);
 
-    // Reset offset
-    tursoBudgetTracker.setMockUsageOffset(0);
+    // Reset offsets
+    tursoBudgetTracker.setMockUsageOffset(0, 0);
   });
 
-  await t.test("5. IDOR prevention: Admin cannot access location trail of another admin's staff", async () => {
+  await t.test("7. IDOR prevention: Admin cannot access location trail of another admin's staff", async () => {
     const { GET: locationHistoryRoute } = await import("../src/app/api/control-room/personnel/[id]/location-history/route");
     const { NextRequest } = await import("next/server");
 
@@ -249,12 +325,11 @@ test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
       },
     });
 
-    // Provide auth cookie or mock session for Admin A
     const res = await locationHistoryRoute(req, { params: Promise.resolve({ id: staffB.id }) });
     assert.ok(res.status === 401 || res.status === 403 || res.status === 404, "Cross-admin access must be rejected");
   });
 
-  await t.test("6. Cleanup test fixtures", async () => {
+  await t.test("8. Cleanup test fixtures", async () => {
     await prisma.location.deleteMany({
       where: { personnelId: { in: [staffA.id, staffB.id] } },
     });
@@ -267,6 +342,8 @@ test("Turso Rows Read 100M Budget and Query Optimization Suite", async (t) => {
     await prisma.user.deleteMany({
       where: { id: { in: [adminA.id, adminB.id, staffA.userId, staffB.userId] } },
     });
+    deviceHeartbeatMemoryMap.delete(deviceA.id);
+    deviceHeartbeatMemoryMap.delete(deviceB.id);
     invalidateDashboardCache();
     invalidateDeviceAuthorizationCache();
   });

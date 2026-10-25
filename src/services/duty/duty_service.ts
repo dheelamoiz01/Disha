@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { invalidateDeviceAuthorizationCache } from "@/services/telemetry/ingestion_service";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 import { prisma } from "@/lib/prisma";
@@ -50,6 +51,7 @@ export async function startDuty(personnelId: string, deviceIdentifier: string, a
 
   // Attempt creation (Protected by DB unique partial index against concurrent starts)
   try {
+    tursoBudgetTracker.recordWrite("attendance_sessions", 1);
     const session = await prisma.dutySession.create({
       data: {
         personnelId,
@@ -90,6 +92,7 @@ export async function endDuty(personnelId: string, actorId: string) {
     throw new DutyError(`Cannot end duty from state ${activeSession.status}.`, "INVALID_TRANSITION");
   }
 
+  tursoBudgetTracker.recordWrite("attendance_sessions", 1);
   const endedSession = await prisma.dutySession.update({
     where: { id: activeSession.id },
     data: {

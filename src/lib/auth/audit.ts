@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { prisma } from "@/lib/prisma";
 
 type AuditAction =
@@ -59,6 +60,7 @@ interface AuditLogOptions {
 
 export async function logAudit(options: AuditLogOptions) {
   try {
+    tursoBudgetTracker.recordWrite("audit_logs", 1);
     await prisma.auditLog.create({
       data: {
         actorId: options.actorId,

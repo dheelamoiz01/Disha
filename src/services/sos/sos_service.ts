@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { invalidateActiveSOSCache } from "@/services/telemetry/ingestion_service";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 import { prisma } from "@/lib/prisma";
@@ -35,6 +36,7 @@ export async function startSOS(personnelId: string, clientEventId: string, actor
   try {
     const result = await prisma.$transaction(async (tx) => {
       // Create SOS
+      tursoBudgetTracker.recordWrite("safety_sos_alerts", 2);
       const sosEvent = await tx.sOSEvent.create({
         data: {
           clientEventId,
@@ -98,6 +100,7 @@ export async function endSOS(personnelId: string, clientEventId: string, actorId
     throw new SOSError("No active SOS event found.", "NO_ACTIVE_SOS");
   }
 
+  tursoBudgetTracker.recordWrite("safety_sos_alerts", 1);
   const endedSOS = await prisma.sOSEvent.update({
     where: { id: activeSOS.id },
     data: {
