@@ -1,3 +1,5 @@
+import { invalidateDeviceAuthorizationCache } from "@/services/telemetry/ingestion_service";
+import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 import { prisma } from "@/lib/prisma";
 import { DutyStatus, DeviceStatus } from "../../../generated/prisma/enums";
 import { DutyStates, canStartDuty, canEndDuty } from "@/domain/duty/duty_state_machine";
@@ -65,6 +67,8 @@ export async function startDuty(personnelId: string, deviceIdentifier: string, a
       metadata: { personnelId, deviceId: device.id },
     });
 
+    invalidateDeviceAuthorizationCache(personnelId);
+    invalidateDashboardCache();
     return session;
   } catch (error: unknown) {
     // Unique constraint violation in SQLite (e.g. from our partial index)
@@ -102,5 +106,7 @@ export async function endDuty(personnelId: string, actorId: string) {
     metadata: { personnelId },
   });
 
-  return endedSession;
+  invalidateDeviceAuthorizationCache(personnelId);
+    invalidateDashboardCache();
+    return endedSession;
 }

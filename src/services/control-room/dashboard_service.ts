@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { prisma } from "@/lib/prisma";
 import {
   getHeartbeatTimeoutMs,
@@ -12,9 +13,15 @@ import {
 
 // Short-lived in-memory cache partitioned by scope to prevent cross-admin data leakage
 const cachedOverviewMap = new Map<string, { data: any[]; timestamp: number }>();
-const CACHE_TTL_MS = 2000; // 2 seconds
+const inFlightOverviewMap = new Map<string, Promise<any[]>>();
+const CACHE_TTL_MS = 6000; // 6 seconds (aligns with 10s SSE / polling while sharing data across tabs)
+
+// In-memory cache for recent location events (rare events, 30s TTL)
+let cachedRecentEvents: { data: any[]; timestamp: number } | null = null;
+const EVENTS_CACHE_TTL_MS = 30_000;
 
 export function invalidateDashboardCache(scopedAdminId?: string) {
+  cachedRecentEvents = null;
   if (scopedAdminId) {
     cachedOverviewMap.delete(scopedAdminId);
     cachedOverviewMap.delete("GLOBAL");
@@ -38,10 +45,16 @@ export async function getDashboardOverview(forceFresh: boolean = false, scopedAd
     return cached.data;
   }
 
+  // Single-Flight: Coalesce concurrent calls for the same scope into one query
+  if (!isTest && !forceFresh && inFlightOverviewMap.has(scopeKey)) {
+    return await inFlightOverviewMap.get(scopeKey)!;
+  }
+
   const LOC_STALE_THRESHOLD_MS = getLocationStaleMs(); // 7 mins default (5-min interval + 2-min buffer)
   const HB_TIMEOUT_MS = getHeartbeatTimeoutMs(); // 2 mins default
   const HB_STALE_THRESHOLD_MS = getHeartbeatStaleMs(); // 75 secs default
 
+  tursoBudgetTracker.recordQuery("dashboard_overview", 15);
   // Single efficient query using indexed filters and selecting ONLY necessary columns, scoped to owning admin
   const personnelList = await prisma.personnel.findMany({
     where: {
@@ -118,14 +131,24 @@ export async function getDashboardOverview(forceFresh: boolean = false, scopedAd
 
   // Also check if any recent location event exists (e.g. LOCATION_UNAVAILABLE)
   const activePersonnelIds = personnelList.map((p) => p.id);
-  const recentEvents = await prisma.locationEvent.findMany({
-    where: {
-      personnelId: { in: activePersonnelIds },
-      recordedAt: { gte: new Date(now - 15 * 60 * 1000) }, // last 15 mins only
-    },
-    orderBy: { recordedAt: "desc" },
-    take: 50,
-  });
+  let recentEvents: any[] = [];
+  if (!isTest && cachedRecentEvents && now - cachedRecentEvents.timestamp < EVENTS_CACHE_TTL_MS) {
+    recentEvents = cachedRecentEvents.data;
+  } else {
+    tursoBudgetTracker.recordQuery("dashboard_overview", 5);
+    recentEvents = await prisma.locationEvent.findMany({
+      where: {
+        personnelId: { in: activePersonnelIds },
+        recordedAt: { gte: new Date(now - 15 * 60 * 1000) }, // last 15 mins only
+      },
+      orderBy: { recordedAt: "desc" },
+      take: 50,
+    });
+    if (!isTest) {
+      cachedRecentEvents = { data: recentEvents, timestamp: now };
+    }
+  }
+
   const evMap = new Map<string, any>();
   for (const ev of recentEvents) {
     if (!evMap.has(ev.personnelId)) {

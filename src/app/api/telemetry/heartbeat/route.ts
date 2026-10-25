@@ -78,7 +78,16 @@ export async function POST(req: Request) {
       data: updateData,
     });
 
-    invalidateDashboardCache();
+    // Only invalidate dashboard cache on genuine state transitions to protect Turso row read budget
+    const hasStateChange =
+      (parsed.locationEnabled !== undefined && parsed.locationEnabled !== device.locationEnabled) ||
+      (parsed.permissionState !== undefined && parsed.permissionState !== device.permissionState) ||
+      (parsed.isTrackingRunning !== undefined && parsed.isTrackingRunning !== device.isTrackingRunning) ||
+      (parsed.networkState !== undefined && parsed.networkState !== device.networkState && (parsed.networkState === "OFFLINE" || device.networkState === "OFFLINE"));
+
+    if (hasStateChange) {
+      invalidateDashboardCache();
+    }
 
     // Detect state changes and log critical events (only on state transition to prevent DB bloat)
     if (parsed.locationEnabled === false && device.locationEnabled !== false) {

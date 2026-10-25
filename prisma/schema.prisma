@@ -231,6 +231,7 @@ model Location {
 
   @@index([personnelId, recordedAt])
   @@index([dutySessionId, recordedAt])
+  @@index([recordedAt])
 }
 
 model LocationEvent {

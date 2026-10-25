@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/auth/audit";
 import { getRollingRetentionCutoffIST, getDutyCurrentTime } from "@/lib/utils/duty_window";
@@ -147,6 +148,7 @@ export async function purgeExpiredLocationData(
     {
       let batchCount = 0;
       while (true) {
+        tursoBudgetTracker.recordQuery("retention_purge", PURGE_BATCH_SIZE);
         const batch = await prisma.location.findMany({
           where: { recordedAt: { lt: cutoffDate } },
           select: { id: true },
@@ -172,6 +174,7 @@ export async function purgeExpiredLocationData(
     {
       let batchCount = 0;
       while (true) {
+        tursoBudgetTracker.recordQuery("retention_purge", PURGE_BATCH_SIZE);
         const batch = await prisma.locationEvent.findMany({
           where: { recordedAt: { lt: cutoffDate } },
           select: { id: true },
@@ -197,6 +200,7 @@ export async function purgeExpiredLocationData(
     {
       let batchCount = 0;
       while (true) {
+        tursoBudgetTracker.recordQuery("retention_purge", PURGE_BATCH_SIZE);
         const batch = await prisma.heartbeat.findMany({
           where: { recordedAt: { lt: cutoffDate } },
           select: { id: true },

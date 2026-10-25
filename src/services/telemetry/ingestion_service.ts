@@ -8,6 +8,7 @@ import {
   validateTelemetryDutyWindow,
 } from "@/lib/utils/duty_window";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 
 export class TelemetryError extends Error {
   constructor(message: string, public code: string) {
@@ -16,7 +17,66 @@ export class TelemetryError extends Error {
   }
 }
 
+// In-memory cache for device authorization
+interface CachedDeviceAuth {
+  personnel: any;
+  device: any;
+  session: any;
+  cachedAt: number;
+}
+const deviceAuthCache = new Map<string, CachedDeviceAuth>();
+const DEVICE_AUTH_CACHE_TTL_MS = 45_000; // 45 seconds
+
+export function invalidateDeviceAuthorizationCache(personnelId?: string) {
+  if (personnelId) {
+    deviceAuthCache.delete(personnelId);
+  } else {
+    deviceAuthCache.clear();
+  }
+}
+
+// In-memory cache for active SOS
+interface CachedSOS {
+  activeSOS: any;
+  cachedAt: number;
+}
+const activeSOSCache = new Map<string, CachedSOS>();
+const SOS_CACHE_TTL_MS = 30_000; // 30 seconds
+
+export function invalidateActiveSOSCache(personnelId?: string) {
+  if (personnelId) {
+    activeSOSCache.delete(personnelId);
+  } else {
+    activeSOSCache.clear();
+  }
+}
+
+// In-memory tracker for last recorded location per personnel (eliminates Location.findFirst on every ping)
+const lastRecordedLocationMap = new Map<string, { id: string; recordedAtMs: number }>();
+
+export function clearLastRecordedLocationMap(personnelId?: string) {
+  if (personnelId) {
+    lastRecordedLocationMap.delete(personnelId);
+  } else {
+    lastRecordedLocationMap.clear();
+  }
+}
+
 export async function validateDeviceAuthorization(personnelId: string) {
+  const isTest =
+    process.env.NODE_ENV === "test" ||
+    process.env.DISABLE_CACHE === "1" ||
+    process.argv.some((a) => a.includes("test"));
+
+  const now = Date.now();
+  if (!isTest) {
+    const cached = deviceAuthCache.get(personnelId);
+    if (cached && now - cached.cachedAt < DEVICE_AUTH_CACHE_TTL_MS) {
+      return { personnel: cached.personnel, device: cached.device, session: cached.session };
+    }
+  }
+
+  tursoBudgetTracker.recordQuery("telemetry_ingestion", 3);
   const personnel = await prisma.personnel.findUnique({
     where: { id: personnelId },
     include: { user: true }
@@ -46,6 +106,15 @@ export async function validateDeviceAuthorization(personnelId: string) {
   // Optionally get active duty session
   const session = await getActiveDutySession(personnelId);
 
+  if (!isTest) {
+    deviceAuthCache.set(personnelId, {
+      personnel,
+      device,
+      session,
+      cachedAt: now,
+    });
+  }
+
   return { personnel, device, session };
 }
 
@@ -62,9 +131,29 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
   // Link active duty session if one is currently open (for session-specific analytics)
   const activeDutySession = session;
 
-  const activeSOS = await prisma.sOSEvent.findFirst({
-    where: { personnelId, endedAt: null, status: "ACTIVE" }
-  });
+  const isTest =
+    process.env.NODE_ENV === "test" ||
+    process.env.DISABLE_CACHE === "1" ||
+    process.argv.some((a) => a.includes("test"));
+
+  const nowMs = Date.now();
+  let activeSOS: any = null;
+  if (!isTest) {
+    const cachedSOS = activeSOSCache.get(personnelId);
+    if (cachedSOS && nowMs - cachedSOS.cachedAt < SOS_CACHE_TTL_MS) {
+      activeSOS = cachedSOS.activeSOS;
+    }
+  }
+
+  if (activeSOS === null) {
+    tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
+    activeSOS = await prisma.sOSEvent.findFirst({
+      where: { personnelId, endedAt: null, status: "ACTIVE" }
+    });
+    if (!isTest) {
+      activeSOSCache.set(personnelId, { activeSOS, cachedAt: nowMs });
+    }
+  }
 
   const actualTrackingMode = activeSOS ? "SOS" : "NORMAL";
 
@@ -92,18 +181,36 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
     : 8 * 1000; // 8 seconds default (buffer for 10-second sampling)
 
   if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
-    const lastRecorded = await prisma.location.findFirst({
-      where: {
-        personnelId,
-      },
-      orderBy: { recordedAt: "desc" },
-      select: { id: true, recordedAt: true },
-    });
+    let lastRecorded = lastRecordedLocationMap.get(personnelId);
+    if (!lastRecorded && device.latestLocationTime) {
+      lastRecorded = {
+        id: `prev-${device.id}`,
+        recordedAtMs: new Date(device.latestLocationTime).getTime(),
+      };
+      lastRecordedLocationMap.set(personnelId, lastRecorded);
+    }
+
+    if (!lastRecorded) {
+      tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
+      const lastInDb = await prisma.location.findFirst({
+        where: {
+          personnelId,
+        },
+        orderBy: { recordedAt: "desc" },
+        select: { id: true, recordedAt: true },
+      });
+      if (lastInDb) {
+        lastRecorded = {
+          id: lastInDb.id,
+          recordedAtMs: new Date(lastInDb.recordedAt).getTime(),
+        };
+        lastRecordedLocationMap.set(personnelId, lastRecorded);
+      }
+    }
 
     if (lastRecorded) {
-      const elapsedMs = Math.abs(
-        new Date(input.recordedAt).getTime() - new Date(lastRecorded.recordedAt).getTime()
-      );
+      const pointTimeMs = new Date(input.recordedAt).getTime();
+      const elapsedMs = Math.abs(pointTimeMs - lastRecorded.recordedAtMs);
       if (elapsedMs < intervalThresholdMs) {
         // Update device latest position and lastSeenAt without writing a duplicate row to Location table
         const updateData: any = {
@@ -126,7 +233,11 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
           data: updateData,
         });
 
-        invalidateDashboardCache();
+        // Update cached device in memory
+        const cachedAuth = deviceAuthCache.get(personnelId);
+        if (cachedAuth && cachedAuth.device) {
+          Object.assign(cachedAuth.device, updateData);
+        }
 
         return {
           status: "deduplicated",
@@ -156,8 +267,14 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
       },
     });
 
-    // Update device latest position and lastSeenAt
-    const updateData: any = {
+    // Update in-memory last recorded tracker
+    lastRecordedLocationMap.set(personnelId, {
+      id: location.id,
+      recordedAtMs: new Date(input.recordedAt).getTime(),
+    });
+
+    // Always touch device's lastSeenAt and latest position if fresh
+    const deviceUpdateData: any = {
       lastSeenAt: serverNow,
       lastHeartbeatAt: serverNow,
       status: "ACTIVE",
@@ -165,23 +282,28 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
       networkState: input.networkState || device.networkState,
     };
     if (shouldUpdateDevicePosition) {
-      updateData.latestLatitude = input.latitude;
-      updateData.latestLongitude = input.longitude;
-      updateData.latestAccuracy = input.accuracy;
-      updateData.latestSource = input.source;
-      updateData.latestLocationTime = input.recordedAt;
+      deviceUpdateData.latestLatitude = input.latitude;
+      deviceUpdateData.latestLongitude = input.longitude;
+      deviceUpdateData.latestAccuracy = input.accuracy;
+      deviceUpdateData.latestSource = input.source;
+      deviceUpdateData.latestLocationTime = input.recordedAt;
     }
 
     await prisma.device.update({
       where: { id: device.id },
-      data: updateData,
+      data: deviceUpdateData,
     });
 
-    invalidateDashboardCache();
+    // Update cached device in memory
+    const cachedAuth = deviceAuthCache.get(personnelId);
+    if (cachedAuth && cachedAuth.device) {
+      Object.assign(cachedAuth.device, deviceUpdateData);
+    }
 
     return { status: "accepted", locationId: location.id, receivedAt: location.receivedAt };
   } catch (error: unknown) {
     if ((error as any)?.message?.includes("UNIQUE constraint failed") || (error as any)?.code === "P2002") {
+      tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
       const existing = await prisma.location.findUnique({ where: { clientEventId: input.clientEventId } });
       return { status: "deduplicated", locationId: existing?.id, receivedAt: existing?.receivedAt };
     }
@@ -205,6 +327,9 @@ export async function ingestLocationEvent(personnelId: string, input: LocationEv
       },
     });
 
+    // Crucial: Invalidate overview cache on genuine state-changing event
+    invalidateDashboardCache();
+
     if (input.eventType === "LOCATION_UNAVAILABLE" || input.eventType === "LOCATION_RECOVERED") {
        await logAudit({
          action: input.eventType as "LOCATION_UNAVAILABLE" | "LOCATION_RECOVERED",
@@ -217,6 +342,7 @@ export async function ingestLocationEvent(personnelId: string, input: LocationEv
     return { status: "accepted", eventId: event.id, receivedAt: event.receivedAt };
   } catch (error: unknown) {
     if ((error as any)?.message?.includes("UNIQUE constraint failed") || (error as any)?.code === "P2002") {
+      tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
       const existing = await prisma.locationEvent.findUnique({ where: { clientEventId: input.clientEventId } });
       return { status: "deduplicated", eventId: existing?.id, receivedAt: existing?.receivedAt };
     }
@@ -232,9 +358,30 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
   // Link active duty session if one is currently open (for session-specific analytics)
   const activeDutySession = session;
 
-  const activeSOS = await prisma.sOSEvent.findFirst({
-    where: { personnelId, endedAt: null, status: "ACTIVE" }
-  });
+  const isTest =
+    process.env.NODE_ENV === "test" ||
+    process.env.DISABLE_CACHE === "1" ||
+    process.argv.some((a) => a.includes("test"));
+
+  const nowMs = Date.now();
+  let activeSOS: any = null;
+  if (!isTest) {
+    const cachedSOS = activeSOSCache.get(personnelId);
+    if (cachedSOS && nowMs - cachedSOS.cachedAt < SOS_CACHE_TTL_MS) {
+      activeSOS = cachedSOS.activeSOS;
+    }
+  }
+
+  if (activeSOS === null) {
+    tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
+    activeSOS = await prisma.sOSEvent.findFirst({
+      where: { personnelId, endedAt: null, status: "ACTIVE" }
+    });
+    if (!isTest) {
+      activeSOSCache.set(personnelId, { activeSOS, cachedAt: nowMs });
+    }
+  }
+
   const actualTrackingMode = activeSOS ? "SOS" : "NORMAL";
 
   const results = {
@@ -249,13 +396,29 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
 
     let lastAcceptedTimeMs: number | null = null;
     if (actualTrackingMode !== "SOS" && intervalThresholdMs > 0) {
-      const lastInDb = await prisma.location.findFirst({
-        where: { personnelId },
-        orderBy: { recordedAt: "desc" },
-        select: { recordedAt: true },
-      });
-      if (lastInDb) {
-        lastAcceptedTimeMs = new Date(lastInDb.recordedAt).getTime();
+      const inMemory = lastRecordedLocationMap.get(personnelId);
+      if (inMemory) {
+        lastAcceptedTimeMs = inMemory.recordedAtMs;
+      } else if (device.latestLocationTime) {
+        lastAcceptedTimeMs = new Date(device.latestLocationTime).getTime();
+        lastRecordedLocationMap.set(personnelId, {
+          id: `prev-${device.id}`,
+          recordedAtMs: lastAcceptedTimeMs,
+        });
+      } else {
+        tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
+        const lastInDb = await prisma.location.findFirst({
+          where: { personnelId },
+          orderBy: { recordedAt: "desc" },
+          select: { recordedAt: true },
+        });
+        if (lastInDb) {
+          lastAcceptedTimeMs = new Date(lastInDb.recordedAt).getTime();
+          lastRecordedLocationMap.set(personnelId, {
+            id: `prev-${device.id}`,
+            recordedAtMs: lastAcceptedTimeMs,
+          });
+        }
       }
     }
 
@@ -303,9 +466,14 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
           },
         });
         lastAcceptedTimeMs = new Date(loc.recordedAt).getTime();
+        lastRecordedLocationMap.set(personnelId, {
+          id: location.id,
+          recordedAtMs: lastAcceptedTimeMs,
+        });
         results.locations.push({ clientEventId: loc.clientEventId, status: "accepted", locationId: location.id, receivedAt: location.receivedAt });
       } catch (err: unknown) {
         if ((err as any)?.message?.includes("UNIQUE constraint failed") || (err as any)?.code === "P2002") {
+          tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
           const existing = await prisma.location.findUnique({ where: { clientEventId: loc.clientEventId } });
           results.locations.push({ clientEventId: loc.clientEventId, status: "deduplicated", locationId: existing?.id, receivedAt: existing?.receivedAt });
         } else {
@@ -349,7 +517,12 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       where: { id: device.id },
       data: deviceBatchUpdate,
     });
-    invalidateDashboardCache();
+
+    // Update cached device in memory
+    const cachedAuth = deviceAuthCache.get(personnelId);
+    if (cachedAuth && cachedAuth.device) {
+      Object.assign(cachedAuth.device, deviceBatchUpdate);
+    }
   }
 
   if (input.events && input.events.length > 0) {

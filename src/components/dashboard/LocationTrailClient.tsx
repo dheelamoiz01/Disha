@@ -59,6 +59,10 @@ export default function LocationTrailClient({
 
   // Data State
   const [trailData, setTrailData] = useState<StaffTrailResult | null>(null);
+  const trailDataRef = useRef<StaffTrailResult | null>(null);
+  useEffect(() => {
+    trailDataRef.current = trailData;
+  }, [trailData]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingPersonnel, setIsLoadingPersonnel] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);

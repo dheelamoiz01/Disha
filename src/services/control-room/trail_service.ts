@@ -1,3 +1,4 @@
+import { tursoBudgetTracker } from "@/lib/turso/budget";
 import { prisma } from "@/lib/prisma";
 import { getISTDayRange } from "@/lib/utils/time";
 
@@ -54,6 +55,7 @@ export interface StaffTrailResult {
   locations: TrailPoint[];
   summary: RouteSummary;
   trackingGaps: TrackingGap[];
+  incremental?: boolean;
 }
 
 /**
@@ -78,6 +80,23 @@ export function haversineDistanceMeters(
   return R * c;
 }
 
+
+// Short-lived in-memory cache for past immutable date trails (15 mins)
+const pastTrailCache = new Map<string, { data: StaffTrailResult; cachedAt: number }>();
+const PAST_TRAIL_CACHE_TTL_MS = 15 * 60 * 1000;
+
+export function invalidatePastTrailCache(personnelId?: string) {
+  if (personnelId) {
+    for (const key of pastTrailCache.keys()) {
+      if (key.startsWith(personnelId + ":")) {
+        pastTrailCache.delete(key);
+      }
+    }
+  } else {
+    pastTrailCache.clear();
+  }
+}
+
 /**
  * Fetches and analyzes chronological location trail for a staff member.
  */
@@ -88,6 +107,7 @@ export async function getStaffLocationTrail(
     startTime?: Date;
     endTime?: Date;
     dutySessionId?: string;
+    since?: Date | string;
   }
 ): Promise<StaffTrailResult> {
   const personnel = await prisma.personnel.findUnique({
@@ -111,6 +131,29 @@ export async function getStaffLocationTrail(
     active: false,
   };
 
+
+  const isTest =
+    process.env.NODE_ENV === "test" ||
+    process.env.DISABLE_CACHE === "1" ||
+    process.argv.some((a) => a.includes("test"));
+
+  const todayIST = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+
+  const isPastDate = Boolean(options.dateStr && options.dateStr < todayIST && !options.since);
+  const cacheKey = `${personnelId}:${options.dateStr}:${options.dutySessionId || "ALL"}`;
+
+  if (!isTest && isPastDate) {
+    const cached = pastTrailCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < PAST_TRAIL_CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
   let rangeStart: Date;
   let rangeEnd: Date;
 
@@ -133,6 +176,69 @@ export async function getStaffLocationTrail(
     const range = getISTDayRange(istDate);
     rangeStart = range.startTime;
     rangeEnd = range.endTime;
+  }
+
+
+  // Fast Incremental Path: If 'since' is provided, query only points recorded after 'since'
+  if (options.since) {
+    const sinceDate = new Date(options.since);
+    tursoBudgetTracker.recordQuery("location_trail", 1);
+    const newLocations = await prisma.location.findMany({
+      where: {
+        personnelId,
+        recordedAt: {
+          gt: sinceDate,
+          lte: rangeEnd,
+        },
+        ...(options.dutySessionId ? { dutySessionId: options.dutySessionId } : {}),
+      },
+      orderBy: { recordedAt: "asc" },
+      take: 200,
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        accuracy: true,
+        recordedAt: true,
+        trackingMode: true,
+        source: true,
+        dutySessionId: true,
+      },
+    });
+
+    const processed: TrailPoint[] = newLocations.map((loc) => ({
+      id: loc.id,
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      accuracy: loc.accuracy,
+      recordedAt: loc.recordedAt,
+      trackingMode: loc.trackingMode,
+      source: loc.source,
+      dutySessionId: loc.dutySessionId,
+    }));
+
+    return {
+      personnel: personnelObj,
+      sessions: [],
+      locations: processed,
+      summary: {
+        totalPoints: processed.length,
+        verifiedPointsCount: processed.filter((p) => p.accuracy <= 20).length,
+        optimalPointsCount: processed.filter((p) => p.accuracy <= 10).length,
+        coarsePointsCount: processed.filter((p) => p.accuracy > 20).length,
+        estimatedDistanceKm: 0,
+        firstRecordedAt: processed[0]?.recordedAt || null,
+        lastRecordedAt: processed[processed.length - 1]?.recordedAt || null,
+        dutyStart: null,
+        dutyEnd: null,
+        dutyDurationMinutes: null,
+        longestGapMinutes: 0,
+        gapCount: 0,
+        jumpAnomaliesCount: 0,
+      },
+      trackingGaps: [],
+      incremental: true,
+    };
   }
 
   // Fetch duty sessions overlapping this date range
@@ -312,11 +418,18 @@ export async function getStaffLocationTrail(
     jumpAnomaliesCount,
   };
 
-  return {
+  const finalResult: StaffTrailResult = {
     personnel: personnelObj,
     sessions,
     locations: processedLocations,
     summary,
     trackingGaps,
   };
+
+  if (!isTest && isPastDate) {
+    pastTrailCache.set(cacheKey, { data: finalResult, cachedAt: Date.now() });
+  }
+  tursoBudgetTracker.recordQuery("location_trail", rawLocations.length);
+
+  return finalResult;
 }

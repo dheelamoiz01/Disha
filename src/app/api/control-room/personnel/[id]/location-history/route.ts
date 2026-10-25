@@ -31,6 +31,7 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
     const startParam = searchParams.get("start");
     const endParam = searchParams.get("end");
     const dutySessionId = searchParams.get("dutySessionId") || undefined;
+    const sinceParam = searchParams.get("since") || undefined;
 
     let trailResult;
 
@@ -39,6 +40,7 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
       trailResult = await getStaffLocationTrail(personnelId, {
         dateStr: dateParam,
         dutySessionId,
+        since: sinceParam,
       });
     } else if (startParam && endParam) {
       const startTime = new Date(startParam);
@@ -60,17 +62,21 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
         startTime,
         endTime,
         dutySessionId,
+        since: sinceParam,
       });
     } else {
       // Default to today in IST
       trailResult = await getStaffLocationTrail(personnelId, {
         dutySessionId,
+        since: sinceParam,
       });
     }
 
-    await logAudit({
-      actorId: user.id,
-      action: "VIEW_LOCATION_HISTORY",
+    // Only record audit log for initial full views, not lightweight background incremental polls
+    if (!sinceParam) {
+      await logAudit({
+        actorId: user.id,
+        action: "VIEW_LOCATION_HISTORY",
       targetType: "Personnel",
       targetId: personnelId,
       metadata: {
@@ -81,6 +87,7 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
         pointsReturned: trailResult.locations.length,
       },
     });
+    }
 
     return NextResponse.json({
       personnel: trailResult.personnel,

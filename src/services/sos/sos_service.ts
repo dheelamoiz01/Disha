@@ -1,3 +1,5 @@
+import { invalidateActiveSOSCache } from "@/services/telemetry/ingestion_service";
+import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 import { prisma } from "@/lib/prisma";
 import { SOSStatus, AlertType, AlertSeverity, AlertStatus } from "../../../generated/prisma/enums";
 import { validateDeviceAuthorization } from "@/services/telemetry/ingestion_service";
@@ -68,6 +70,8 @@ export async function startSOS(personnelId: string, clientEventId: string, actor
       metadata: { personnelId, dutySessionId: session?.id, alertId: result.alert.id },
     });
 
+    invalidateActiveSOSCache(personnelId);
+    invalidateDashboardCache();
     return { status: "accepted", sosEventId: result.sosEvent.id };
   } catch (error: unknown) {
     if ((error as any)?.message?.includes("UNIQUE constraint failed") || (error as any)?.code === "P2002") {
