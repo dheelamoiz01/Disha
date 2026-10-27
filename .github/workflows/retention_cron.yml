@@ -2,8 +2,8 @@ name: DISHA Rolling 2-Day Retention Periodic Cleanup
 
 on:
   schedule:
-    # Execute every hour at minute 0 UTC to enforce rolling retention throughout the day
-    - cron: '0 * * * *'
+    # Execute daily at 19:00 UTC (00:30 IST) to safely purge records older than 24 hours
+    - cron: '0 19 * * *'
   workflow_dispatch:
 
 jobs:

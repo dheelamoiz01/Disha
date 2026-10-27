@@ -44,8 +44,7 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
   const activeControllerRef = useRef<AbortController | null>(null);
   const isFetchingRef = useRef(false);
   const lastFetchTimeRef = useRef<number>(0);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const sseFailedRef = useRef(false);
+  const lastEtagRef = useRef<string | null>(null);
 
   const fetchData = useCallback(async () => {
     // Avoid concurrent overlapping requests
@@ -61,15 +60,31 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
     isFetchingRef.current = true;
 
     try {
+      const headers: Record<string, string> = { "Cache-Control": "no-cache" };
+      if (lastEtagRef.current) {
+        headers["If-None-Match"] = lastEtagRef.current;
+      }
+
       const res = await fetch("/api/control-room/overview", {
         signal: controller.signal,
-        headers: { "Cache-Control": "no-cache" }
+        headers,
       });
+
+      if (res.status === 304) {
+        // Data unchanged; 0 CPU wasted re-rendering or serializing
+        setLastUpdated(new Date());
+        setError(null);
+        lastFetchTimeRef.current = Date.now();
+        return;
+      }
 
       if (!res.ok) {
         const errorText = await res.text();
         throw new Error(`Overview fetch failed (${res.status}): ${errorText}`);
       }
+
+      const etag = res.headers.get("ETag");
+      if (etag) lastEtagRef.current = etag;
 
       const json = await res.json();
       setData(json);
@@ -91,97 +106,35 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
     let timeoutId: NodeJS.Timeout | null = null;
     let isMounted = true;
 
-    // Polling fallback scheduler
+    // High-efficiency adaptive conditional poller
     const scheduleNextPoll = () => {
       if (!isMounted) return;
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(async () => {
         if (!isMounted) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-          // If SSE is active and healthy, no need to poll
-          if (!eventSourceRef.current || sseFailedRef.current) {
-            await fetchData();
-          }
+          await fetchData();
         }
         scheduleNextPoll();
       }, intervalMs);
     };
 
-    // SSE connection manager
-    const connectSSE = () => {
-      if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
-        sseFailedRef.current = true;
-        fetchData();
-        scheduleNextPoll();
-        return;
-      }
-
-      if (eventSourceRef.current) {
-        try { eventSourceRef.current.close(); } catch (_) {}
-        eventSourceRef.current = null;
-      }
-
-      try {
-        const es = new EventSource("/api/control-room/overview/sse");
-        eventSourceRef.current = es;
-
-        es.onmessage = (event) => {
-          if (!isMounted) return;
-          try {
-            const parsed = JSON.parse(event.data);
-            setData(parsed);
-            setLastUpdated(new Date());
-            setError(null);
-            setIsLoading(false);
-            sseFailedRef.current = false;
-            lastFetchTimeRef.current = Date.now();
-          } catch (e) {
-            console.error("Error parsing SSE overview:", e);
-          }
-        };
-
-        es.onerror = () => {
-          if (!isMounted) return;
-          // On SSE disconnect/error, smoothly fallback to polling
-          sseFailedRef.current = true;
-          if (eventSourceRef.current) {
-            try { eventSourceRef.current.close(); } catch (_) {}
-            eventSourceRef.current = null;
-          }
-          // Fetch immediately to guarantee fresh data, then poll
-          fetchData();
-          scheduleNextPoll();
-        };
-      } catch (err) {
-        sseFailedRef.current = true;
-        fetchData();
-        scheduleNextPoll();
-      }
-    };
-
-    // Initial connection:
+    // Initial connection
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      connectSSE();
+      fetchData();
       scheduleNextPoll();
     }
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        // Tab brought to foreground: immediately refresh data & ensure SSE is connected
+        // Tab foregrounded: refresh immediately if stale (> 2s)
         const elapsed = Date.now() - lastFetchTimeRef.current;
         if (elapsed > 2000) {
           fetchData();
         }
-        if (!eventSourceRef.current) {
-          connectSSE();
-        }
         scheduleNextPoll();
       } else {
-        // Tab backgrounded: close SSE to prevent serverless stream waste
-        if (eventSourceRef.current) {
-          try { eventSourceRef.current.close(); } catch (_) {}
-          eventSourceRef.current = null;
-        }
+        // Tab backgrounded: stop polling to eliminate idle serverless compute consumption
         if (timeoutId) {
           clearTimeout(timeoutId);
           timeoutId = null;
@@ -189,19 +142,28 @@ export function useDashboardData(intervalMs: number = 10000, initialData?: Dashb
       }
     };
 
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') {
+        const elapsed = Date.now() - lastFetchTimeRef.current;
+        if (elapsed > 2000) {
+          fetchData();
+        }
+      }
+    };
+
     document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("online", handleFocus);
 
     return () => {
       isMounted = false;
       if (timeoutId) clearTimeout(timeoutId);
-      if (eventSourceRef.current) {
-        try { eventSourceRef.current.close(); } catch (_) {}
-        eventSourceRef.current = null;
-      }
       if (activeControllerRef.current) {
         activeControllerRef.current.abort();
       }
       document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("online", handleFocus);
     };
   }, [fetchData, intervalMs]);
 

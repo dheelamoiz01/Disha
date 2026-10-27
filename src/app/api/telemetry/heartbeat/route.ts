@@ -5,8 +5,8 @@ import { z } from "zod";
 import { validateDeviceAuthorization } from "@/services/telemetry/ingestion_service";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 
-// In-memory memory map for instantaneous live status without database churn
-export const deviceHeartbeatMemoryMap = new Map<string, { lastSeenAt: Date; batteryLevel?: number | null; networkState?: string | null }>();
+import { deviceHeartbeatMemoryMap } from "@/lib/telemetry/presence";
+export { deviceHeartbeatMemoryMap };
 
 const heartbeatSchema = z.object({
   personnelId: z.string(),

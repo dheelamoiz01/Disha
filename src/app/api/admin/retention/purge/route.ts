@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { purgeExpiredLocationData, RETENTION_BUSINESS_DAYS } from "@/services/retention/purge_service";
+import { purgeExpiredLocationData, RETENTION_HOURS } from "@/services/retention/purge_service";
 import { getSession } from "@/lib/auth/session";
 import { isSuperAdmin } from "@/lib/auth/permissions";
 
@@ -74,7 +74,7 @@ export async function POST(req: Request) {
     }
 
     // ── Parse optional override ──────────────────────────────────────────────
-    let daysOrHours = RETENTION_BUSINESS_DAYS; // Default 2 business days
+    let daysOrHours = RETENTION_HOURS; // Default 24 hours
 
     try {
       const body = await req.json();
@@ -108,7 +108,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: `Rolling 2-day retention purge completed. Permanently deleted ${result.locationsPurged} GPS pings, ${result.eventsPurged} location events, and ${result.heartbeatsPurged} heartbeats older than cutoff (cutoff: ${result.cutoffDate}).`,
+      message: `24-hour location retention purge completed. Permanently deleted ${result.locationsPurged} GPS pings, ${result.eventsPurged} location events, and ${result.heartbeatsPurged} heartbeats older than cutoff (cutoff: ${result.cutoffDate}).`,
       ...result,
     });
   } catch (error: any) {

@@ -151,18 +151,16 @@ export function validateTelemetryDutyWindow(
     };
   }
 
-  // 2. Reject stale records beyond rolling 2-day retention window.
-  //    This matches the database retention policy exactly: records older than the preceding
-  //    IST business day are physically deleted by the purge job, so accepting uploads
-  //    beyond this window would insert records that are immediately eligible for
-  //    deletion and could not appear in historical trail queries.
-  //    This also prevents offline-queued pings from resurrecting deleted trails.
-  const retentionCutoff = getRollingRetentionCutoffIST(serverNow, 2);
+  // 2. Reject stale records beyond 24-hour retention window.
+  //    This matches the database retention policy exactly: records older than 24 hours
+  //    are physically deleted by the purge job, so accepting uploads beyond this window
+  //    would insert records that are immediately eligible for deletion.
+  const retentionCutoff = new Date(serverNow.getTime() - 24 * 60 * 60 * 1000);
   if (recordedAt.getTime() < retentionCutoff.getTime()) {
     return {
       permitted: false,
       code: "TIMESTAMP_STALE",
-      reason: "Location timestamp is older than the rolling 2-business-day retention window (earlier than preceding IST business day).",
+      reason: "Location timestamp is older than the 24-hour retention window.",
     };
   }
 

@@ -36,9 +36,10 @@ import { getRollingRetentionCutoffIST, getDutyCurrentTime } from "@/lib/utils/du
  *   - AppRelease       (OTA release metadata)
  */
 
-export const RETENTION_POLICY = "rolling_2_business_days_ist";
-export const RETENTION_BUSINESS_DAYS = 2;
-export const MAX_LOCATION_RETENTION_HOURS = 48; // Kept for backward compatibility
+export const RETENTION_POLICY = "rolling_24_hours";
+export const RETENTION_HOURS = 24;
+export const RETENTION_BUSINESS_DAYS = 1;
+export const MAX_LOCATION_RETENTION_HOURS = 24;
 
 /** Batch size for safe incremental deletes — avoids holding large table locks */
 const PURGE_BATCH_SIZE = 500;
@@ -63,47 +64,44 @@ export interface PurgeResult {
  */
 export function getRetentionCutoffDate(
   referenceTime: Date = getDutyCurrentTime(),
-  businessDaysToKeep: number = RETENTION_BUSINESS_DAYS
+  hoursToKeep: number = RETENTION_HOURS
 ): Date {
-  return getRollingRetentionCutoffIST(referenceTime, businessDaysToKeep);
+  return new Date(referenceTime.getTime() - hoursToKeep * 60 * 60 * 1000);
 }
 
 /**
  * Permanently deletes GPS location pings, LocationEvents, and Heartbeats
- * older than the rolling 2-business-day window in Asia/Kolkata.
- *
- * The cutoff timestamp is derived from the server clock:
- *   cutoff = Start of preceding business day in Asia/Kolkata (00:00:00.000 IST).
+ * older than 24 hours.
  *
  * Records with recordedAt < cutoff are physically DELETEd from the database.
  * Processing occurs in safe batches of 500 to prevent blocking live writes.
  *
- * @param daysOrHours   - Business days to retain (default 2), or hours (e.g. 48)
+ * @param daysOrHours   - Hours to retain (default 24), or days (e.g. 1)
  * @param actorId       - Identifier for audit log (user ID or "SYSTEM_CRON")
  * @param referenceTime - Optional reference time (defaults to server clock / mock clock)
  */
 export async function purgeExpiredLocationData(
-  daysOrHours: number = RETENTION_BUSINESS_DAYS,
+  daysOrHours: number = RETENTION_HOURS,
   actorId: string = "SYSTEM_CRON",
   referenceTime?: Date
 ): Promise<PurgeResult> {
   const startedAt = Date.now();
 
   // Normalize days vs hours input
-  let effectiveDays = RETENTION_BUSINESS_DAYS;
+  let effectiveHours = RETENTION_HOURS;
   if (typeof daysOrHours === "number") {
-    if (daysOrHours > 7) {
-      // Input in hours (e.g. 48 -> 2 days)
-      effectiveDays = Math.max(1, Math.round(daysOrHours / 24));
+    if (daysOrHours <= 7) {
+      // Input in days (e.g. 1 -> 24 hours)
+      effectiveHours = daysOrHours * 24;
     } else {
-      effectiveDays = Math.max(1, daysOrHours);
+      effectiveHours = daysOrHours;
     }
   }
-  // Policy strictly enforces retaining at most 2 business days
-  effectiveDays = Math.min(effectiveDays, RETENTION_BUSINESS_DAYS);
+  // Policy strictly enforces retaining at most 24 hours
+  effectiveHours = Math.min(effectiveHours, RETENTION_HOURS);
 
   const baseTime = referenceTime ?? getDutyCurrentTime();
-  const cutoffDate = getRollingRetentionCutoffIST(baseTime, effectiveDays);
+  const cutoffDate = new Date(baseTime.getTime() - effectiveHours * 60 * 60 * 1000);
 
   // Concurrency guard: prevent overlapping purge jobs
   if (isPurgeRunning) {
@@ -132,7 +130,7 @@ export async function purgeExpiredLocationData(
     metadata: {
       cutoffDate: cutoffDate.toISOString(),
       policy: RETENTION_POLICY,
-      businessDays: effectiveDays,
+      retentionHours: effectiveHours,
       referenceTime: baseTime.toISOString(),
     },
   });
@@ -238,7 +236,7 @@ export async function purgeExpiredLocationData(
         heartbeatsPurged,
         cutoffDate: cutoffDate.toISOString(),
         policy: RETENTION_POLICY,
-        businessDays: effectiveDays,
+        retentionHours: effectiveHours,
         durationMs,
       },
     });
@@ -264,7 +262,7 @@ export async function purgeExpiredLocationData(
         error: errorMsg,
         cutoffDate: cutoffDate.toISOString(),
         policy: RETENTION_POLICY,
-        businessDays: effectiveDays,
+        retentionHours: effectiveHours,
         partialLocationsPurged: locationsPurged,
         partialEventsPurged: eventsPurged,
         partialHeartbeatsPurged: heartbeatsPurged,

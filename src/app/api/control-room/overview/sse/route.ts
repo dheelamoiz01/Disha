@@ -18,47 +18,25 @@ export async function GET(req: NextRequest) {
 
   const scopedAdminId = isSuperAdmin(user) ? null : user.id;
   const encoder = new TextEncoder();
-  let intervalId: NodeJS.Timeout | null = null;
-  let isClosed = false;
 
   const stream = new ReadableStream({
     async start(controller) {
-      const sendOverview = async () => {
-        if (isClosed) return;
-        try {
-          const overview = await getDashboardOverview(false, scopedAdminId);
-          const message = `data: ${JSON.stringify(overview)}\n\n`;
-          controller.enqueue(encoder.encode(message));
-        } catch {
-          // If controller is already closed, suppress
-        }
-      };
-
-      // Send initial overview immediately upon connection
-      await sendOverview();
-
-      // Stream updates every 10 seconds
-      intervalId = setInterval(async () => {
-        if (isClosed) {
-          if (intervalId) clearInterval(intervalId);
-          return;
-        }
-        await sendOverview();
-      }, 10000);
-
-      req.signal.addEventListener("abort", () => {
-        isClosed = true;
-        if (intervalId) clearInterval(intervalId);
+      try {
+        const overview = await getDashboardOverview(false, scopedAdminId);
+        const message = `data: ${JSON.stringify(overview)}\n\n`;
+        controller.enqueue(encoder.encode(message));
+      } catch {
+        // Suppress initial send error
+      } finally {
         try {
           controller.close();
         } catch {
           // Suppress close error
         }
-      });
+      }
     },
     cancel() {
-      isClosed = true;
-      if (intervalId) clearInterval(intervalId);
+      // Stream cancelled
     },
   });
 

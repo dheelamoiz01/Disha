@@ -9,6 +9,7 @@ import {
 } from "@/lib/utils/duty_window";
 import { invalidateDashboardCache } from "@/services/control-room/dashboard_service";
 import { tursoBudgetTracker } from "@/lib/turso/budget";
+import { deviceHeartbeatMemoryMap } from "@/lib/telemetry/presence";
 
 export class TelemetryError extends Error {
   constructor(message: string, public code: string) {
@@ -235,6 +236,11 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
         });
 
         // Update cached device in memory
+        deviceHeartbeatMemoryMap.set(device.id, {
+          lastSeenAt: serverNow,
+          batteryLevel: updateData.batteryLevel,
+          networkState: updateData.networkState,
+        });
         const cachedAuth = deviceAuthCache.get(personnelId);
         if (cachedAuth && cachedAuth.device) {
           Object.assign(cachedAuth.device, updateData);
@@ -297,7 +303,12 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
       data: deviceUpdateData,
     });
 
-    // Update cached device in memory
+    // Update cached device in memory (single)
+    deviceHeartbeatMemoryMap.set(device.id, {
+      lastSeenAt: serverNow,
+      batteryLevel: deviceUpdateData.batteryLevel,
+      networkState: deviceUpdateData.networkState,
+    });
     const cachedAuth = deviceAuthCache.get(personnelId);
     if (cachedAuth && cachedAuth.device) {
       Object.assign(cachedAuth.device, deviceUpdateData);
@@ -524,7 +535,12 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       data: deviceBatchUpdate,
     });
 
-    // Update cached device in memory
+    // Update cached device in memory (batch)
+    deviceHeartbeatMemoryMap.set(device.id, {
+      lastSeenAt: serverNow,
+      batteryLevel: deviceBatchUpdate.batteryLevel,
+      networkState: deviceBatchUpdate.networkState,
+    });
     const cachedAuth = deviceAuthCache.get(personnelId);
     if (cachedAuth && cachedAuth.device) {
       Object.assign(cachedAuth.device, deviceBatchUpdate);

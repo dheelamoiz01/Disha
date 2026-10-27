@@ -30,6 +30,12 @@ export function invalidateDashboardCache(scopedAdminId?: string) {
   }
 }
 
+export function getDashboardOverviewCacheTimestamp(scopedAdminId?: string | null): number | null {
+  const scopeKey = scopedAdminId || "GLOBAL";
+  const cached = cachedOverviewMap.get(scopeKey);
+  return cached ? cached.timestamp : null;
+}
+
 export async function getDashboardOverview(forceFresh: boolean = false, scopedAdminId?: string | null) {
   const scopeKey = scopedAdminId || "GLOBAL";
   const dutyNow = getDutyCurrentTime();
