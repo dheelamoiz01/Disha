@@ -43,7 +43,10 @@ next-env.d.ts
 /src/generated/
 
 # Uploaded APK binaries
-public/downloads/apk/*.apkprisma
+public/downloads/apk/*.apk
+
+backups/
+scripts/prisma
 
 .vercel
 
@@ -60,3 +63,6 @@ generated/
 
 # Uploaded APK binaries
 public/downloads/apk/*.apk
+
+backups/
+scripts/

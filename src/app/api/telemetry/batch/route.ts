@@ -4,6 +4,9 @@ import { requireDeviceAuth } from "@/lib/auth/authorization";
 import { batchIngestionSchema } from "@/domain/telemetry/validation";
 import { ingestBatch, TelemetryError } from "@/services/telemetry/ingestion_service";
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 15; // Bounded to 15s (Hobby-compliant, prevents runaway timeouts)
+
 export async function POST(req: Request) {
   try {
     const { personnel } = await requireDeviceAuth(req);
@@ -20,7 +23,10 @@ export async function POST(req: Request) {
     return NextResponse.json(result);
   } catch (error: any) {
     if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid batch payload", details: error.issues }, { status: 400 });
+      console.warn("[Batch Telemetry 400] Validation failure:", {
+        issues: error.issues.map((i) => ({ path: i.path, code: i.code, message: i.message })),
+      });
+      return NextResponse.json({ error: "Invalid batch payload", code: "VALIDATION_ERROR", details: error.issues }, { status: 400 });
     }
     if (error.message === "UNAUTHORIZED") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (error.message === "FORBIDDEN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });

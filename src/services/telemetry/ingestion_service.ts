@@ -124,6 +124,15 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
   const serverNow = getDutyCurrentTime();
   const dutyValidation = validateTelemetryDutyWindow(new Date(input.recordedAt), serverNow);
   if (!dutyValidation.permitted) {
+    if (dutyValidation.code === "TIMESTAMP_STALE" || dutyValidation.code === "FUTURE_TIMESTAMP") {
+      return {
+        status: "rejected",
+        code: dutyValidation.code,
+        message: dutyValidation.reason,
+        locationId: null,
+        receivedAt: serverNow,
+      };
+    }
     throw new TelemetryError(dutyValidation.reason!, dutyValidation.code!);
   }
 
@@ -437,7 +446,32 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       }
     }
 
+    // 1. Bulk-query existing clientEventIds in ONE indexed query to eliminate P2002 sequential exceptions
+    const eventIds = input.locations.map((l) => l.clientEventId);
+    tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
+    const existingLocations = await prisma.location.findMany({
+      where: { clientEventId: { in: eventIds } },
+      select: { id: true, clientEventId: true, receivedAt: true },
+    });
+    const existingMap = new Map<string, { id: string; receivedAt: Date }>(
+      existingLocations.map((e) => [e.clientEventId, { id: e.id, receivedAt: e.receivedAt }])
+    );
+
+    const toInsertData: any[] = [];
+
     for (const loc of input.locations) {
+      // Check if already in database (duplicate from client retry)
+      const existing = existingMap.get(loc.clientEventId);
+      if (existing) {
+        results.locations.push({
+          clientEventId: loc.clientEventId,
+          status: "deduplicated",
+          locationId: existing.id,
+          receivedAt: existing.receivedAt,
+        });
+        continue;
+      }
+
       // Telemetry validation
       const dutyValidation = validateTelemetryDutyWindow(new Date(loc.recordedAt), serverNow);
       if (!dutyValidation.permitted) {
@@ -463,37 +497,50 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
         }
       }
 
+      lastAcceptedTimeMs = new Date(loc.recordedAt).getTime();
+      toInsertData.push({
+        clientEventId: loc.clientEventId,
+        personnelId: personnelId,
+        deviceId: device.id,
+        dutySessionId: activeDutySession?.id ?? null,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        accuracy: loc.accuracy,
+        recordedAt: new Date(loc.recordedAt),
+        source: loc.source,
+        trackingMode: actualTrackingMode,
+        batteryLevel: loc.batteryLevel ?? null,
+        networkState: loc.networkState ?? null,
+      });
+    }
+
+    // 2. Perform bulk insertion in ONE single LibSQL query
+    if (toInsertData.length > 0) {
       try {
-        tursoBudgetTracker.recordWrite("telemetry_locations", 1);
-        const location = await prisma.location.create({
-          data: {
-            clientEventId: loc.clientEventId,
-            personnelId: personnelId,
-            deviceId: device.id,
-            dutySessionId: activeDutySession?.id ?? null,
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-            accuracy: loc.accuracy,
-            recordedAt: loc.recordedAt,
-            source: loc.source,
-            trackingMode: actualTrackingMode,
-            batteryLevel: loc.batteryLevel ?? null,
-            networkState: loc.networkState ?? null,
-          },
+        tursoBudgetTracker.recordWrite("telemetry_locations", toInsertData.length);
+        await prisma.location.createMany({
+          data: toInsertData,
         });
-        lastAcceptedTimeMs = new Date(loc.recordedAt).getTime();
-        lastRecordedLocationMap.set(personnelId, {
-          id: location.id,
-          recordedAtMs: lastAcceptedTimeMs,
-        });
-        results.locations.push({ clientEventId: loc.clientEventId, status: "accepted", locationId: location.id, receivedAt: location.receivedAt });
+
+        for (const item of toInsertData) {
+          lastRecordedLocationMap.set(personnelId, {
+            id: item.clientEventId,
+            recordedAtMs: item.recordedAt.getTime(),
+          });
+          results.locations.push({
+            clientEventId: item.clientEventId,
+            status: "accepted",
+            locationId: item.clientEventId,
+            receivedAt: serverNow,
+          });
+        }
       } catch (err: unknown) {
-        if ((err as any)?.message?.includes("UNIQUE constraint failed") || (err as any)?.code === "P2002") {
-          tursoBudgetTracker.recordQuery("telemetry_ingestion", 1);
-          const existing = await prisma.location.findUnique({ where: { clientEventId: loc.clientEventId } });
-          results.locations.push({ clientEventId: loc.clientEventId, status: "deduplicated", locationId: existing?.id, receivedAt: existing?.receivedAt });
-        } else {
-          results.locations.push({ clientEventId: loc.clientEventId, status: "error", error: (err as any)?.message });
+        for (const item of toInsertData) {
+          results.locations.push({
+            clientEventId: item.clientEventId,
+            status: "error",
+            error: (err as any)?.message,
+          });
         }
       }
     }
