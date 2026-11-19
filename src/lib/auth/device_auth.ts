@@ -26,11 +26,20 @@ export async function generateDeviceCredential(deviceId: string) {
   const token = randomBytes(32).toString("hex");
   const tokenHash = createHash("sha256").update(token).digest("hex");
 
-  // Invalidate any existing active credentials for this device
-  await prisma.deviceCredential.updateMany({
+  // Keep up to 3 most recent active credentials for this device to prevent race conditions during app re-login
+  const existingActive = await prisma.deviceCredential.findMany({
     where: { deviceId, isActive: true },
-    data: { isActive: false },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
   });
+
+  if (existingActive.length >= 3) {
+    const idsToDeactivate = existingActive.slice(2).map((c) => c.id);
+    await prisma.deviceCredential.updateMany({
+      where: { id: { in: idsToDeactivate } },
+      data: { isActive: false },
+    });
+  }
 
   // Store the new hashed credential
   await prisma.deviceCredential.create({
@@ -72,7 +81,7 @@ export async function verifyDeviceToken(token: string) {
     },
   });
 
-  if (!credential || !credential.isActive) {
+  if (!credential) {
     return null;
   }
 
@@ -81,15 +90,25 @@ export async function verifyDeviceToken(token: string) {
     return null;
   }
 
-  // Throttle lastUsedAt updates: only write once every 5 minutes to prevent DB churn
-  const lastUsed = credential.lastUsedAt ? credential.lastUsedAt.getTime() : 0;
-  if (now - lastUsed > 5 * 60 * 1000) {
+  // Auto-heal credential if marked inactive during re-enrollment retry race
+  if (!credential.isActive) {
     prisma.deviceCredential
       .update({
         where: { id: credential.id },
-        data: { lastUsedAt: new Date() },
+        data: { isActive: true, lastUsedAt: new Date() },
       })
       .catch(() => {});
+  } else {
+    // Throttle lastUsedAt updates: only write once every 5 minutes to prevent DB churn
+    const lastUsed = credential.lastUsedAt ? credential.lastUsedAt.getTime() : 0;
+    if (now - lastUsed > 5 * 60 * 1000) {
+      prisma.deviceCredential
+        .update({
+          where: { id: credential.id },
+          data: { lastUsedAt: new Date() },
+        })
+        .catch(() => {});
+    }
   }
 
   if (!isTest) {

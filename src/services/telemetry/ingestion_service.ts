@@ -124,16 +124,15 @@ export async function ingestSingleLocation(personnelId: string, input: SingleLoc
   const serverNow = getDutyCurrentTime();
   const dutyValidation = validateTelemetryDutyWindow(new Date(input.recordedAt), serverNow);
   if (!dutyValidation.permitted) {
-    if (dutyValidation.code === "TIMESTAMP_STALE" || dutyValidation.code === "FUTURE_TIMESTAMP") {
-      return {
-        status: "rejected",
-        code: dutyValidation.code,
-        message: dutyValidation.reason,
-        locationId: null,
-        receivedAt: serverNow,
-      };
-    }
-    throw new TelemetryError(dutyValidation.reason!, dutyValidation.code!);
+    // Return deduplicated status with 200 OK so legacy installed APK v1.0.0 (which only purges accepted/deduplicated)
+    // cleanly purges stale/out-of-window points from local SQLite queue without DB persistence.
+    return {
+      status: "deduplicated",
+      code: dutyValidation.code,
+      message: dutyValidation.reason,
+      locationId: null,
+      receivedAt: serverNow,
+    };
   }
 
   const { device, session } = await validateDeviceAuthorization(personnelId);
@@ -475,9 +474,11 @@ export async function ingestBatch(personnelId: string, input: BatchIngestionInpu
       // Telemetry validation
       const dutyValidation = validateTelemetryDutyWindow(new Date(loc.recordedAt), serverNow);
       if (!dutyValidation.permitted) {
+        // Return deduplicated status so legacy installed APK v1.0.0 (which only purges accepted/deduplicated)
+        // cleanly purges stale/out-of-window points from local SQLite queue without DB persistence.
         results.locations.push({
           clientEventId: loc.clientEventId,
-          status: "rejected",
+          status: "deduplicated",
           code: dutyValidation.code,
           message: dutyValidation.reason,
         });

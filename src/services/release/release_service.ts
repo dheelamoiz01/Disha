@@ -136,6 +136,17 @@ export async function getLatestActiveRelease() {
 export async function checkAppUpdate(
   currentVersionCode: number
 ): Promise<CheckUpdateResult> {
+  const allowPrompts = process.env.DISABLE_APP_UPDATE_PROMPTS !== "true";
+  const disableMandatory = process.env.DISABLE_MANDATORY_APP_UPDATES === "true";
+
+  if (!allowPrompts) {
+    return {
+      updateAvailable: false,
+      currentVersionCode,
+      latestRelease: null,
+    };
+  }
+
   const latest = await getLatestActiveRelease();
 
   if (!latest || latest.versionCode <= currentVersionCode) {
@@ -146,9 +157,11 @@ export async function checkAppUpdate(
     };
   }
 
-  // Mandatory if explicitly flagged OR if the device's version is below minimum supported
+  // Mandatory if explicitly flagged OR if the device's version is below minimum supported,
+  // unless globally disabled via DISABLE_MANDATORY_APP_UPDATES=true.
   const isMandatory =
-    latest.isMandatory || currentVersionCode < latest.minSupportedVersionCode;
+    !disableMandatory &&
+    (latest.isMandatory || currentVersionCode < latest.minSupportedVersionCode);
 
   return {
     updateAvailable: true,
