@@ -4,17 +4,26 @@ import { hashPassword } from "../src/lib/auth/password";
 import { UserRole } from "../generated/prisma/client";
 
 async function seedStaging() {
-  const dbUrl = process.env.TURSO_DATABASE_URL || "";
+  const dbUrl = (process.env.TURSO_DATABASE_URL || "").trim().toLowerCase();
 
-  // Strict safety check: Ensure target database is strictly staging
-  if (!dbUrl.includes("staging") && process.env.CONFIRM_STAGING_DATABASE !== "1") {
-    console.error(
-      "ERROR: TURSO_DATABASE_URL does not contain 'staging'. Refusing to seed non-staging database to prevent accidental production overwrite."
-    );
+  if (!dbUrl) {
+    console.error("FATAL ERROR: TURSO_DATABASE_URL environment variable is missing. Aborting.");
     process.exit(1);
   }
 
-  // Generate a cryptographically random one-time temporary password (16 characters, high entropy)
+  // 1. Explicitly reject known production databases
+  if (dbUrl.includes("duokarma") || dbUrl.includes("disha-roan")) {
+    console.error("FATAL ERROR: Production database URL detected. Refusing to execute seed on production.");
+    process.exit(1);
+  }
+
+  // 2. Strictly require the staging database identity (must be explicitly 'disha-staging')
+  if (!dbUrl.includes("disha-staging")) {
+    console.error("FATAL ERROR: Database identity mismatch. TURSO_DATABASE_URL must target 'disha-staging'. Aborting.");
+    process.exit(1);
+  }
+
+  // Generate a cryptographically random one-time temporary password (high entropy, 16 chars)
   const tempPassword = `Staging_${crypto.randomBytes(12).toString("base64url")}!`;
   const pwdHash = await hashPassword(tempPassword);
 
