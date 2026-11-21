@@ -28,6 +28,7 @@ GITHUB_RELEASE_TAG = "app-releases"
 # ==============================================================================
 [env.staging]
 name = "disha-staging"
+assets = { directory = ".open-next/assets", binding = "ASSETS" }
 
 # Distinct staging runtime variables
 [env.staging.vars]
