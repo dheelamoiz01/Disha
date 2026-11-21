@@ -1,6 +1,15 @@
-import "dotenv/config";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { PrismaClient } from "../../generated/prisma/client";
+
+// Ensure local environment variables are populated when running CLI test runners
+if (typeof process !== "undefined" && !process.env.TURSO_DATABASE_URL) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require("dotenv/config");
+  } catch {
+    // In Cloudflare Workers, secrets are bound directly to env
+  }
+}
 
 /**
  * Resilient fetch wrapper for Turso over HTTP.

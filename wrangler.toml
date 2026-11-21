@@ -1,0 +1,16 @@
+name = "disha"
+main = ".open-next/worker.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+assets = { directory = ".open-next/assets", binding = "ASSETS" }
+
+# Scheduled cron trigger matching DISHA's 6-hour retention policy
+[triggers]
+crons = ["0 */6 * * *"]
+
+# Optional Cloudflare R2 bucket binding for APK releases
+# Bind your production R2 bucket by creating it via: wrangler r2 bucket create disha-apk-releases
+# [[r2_buckets]]
+# binding = "APK_BUCKET"
+# bucket_name = "disha-apk-releases"

@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSuperAdmin } from "@/lib/auth/permissions";
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
+import { saveApkFile } from "@/lib/storage/apk_storage";
 
 export const dynamic = "force-dynamic";
 
@@ -28,28 +26,15 @@ export async function POST(req: Request) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Calculate SHA-256 hash of the uploaded APK
-    const sha256Checksum = crypto.createHash("sha256").update(buffer).digest("hex").toLowerCase();
-    const fileSizeBytes = buffer.length;
-
-    // Sanitize filename and create unique storage path
-    const safeBaseName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const uniqueFileName = `${Date.now()}_${safeBaseName}`;
-    
-    const targetDir = path.join(process.cwd(), "public", "downloads", "apk");
-    await fs.promises.mkdir(targetDir, { recursive: true });
-
-    const filePath = path.join(targetDir, uniqueFileName);
-    await fs.promises.writeFile(filePath, buffer);
-
-    const downloadUrl = `/downloads/apk/${uniqueFileName}`;
+    // Save APK using storage abstraction (R2 in Cloudflare, filesystem fallback in Node dev/test)
+    const result = await saveApkFile(originalName, buffer);
 
     return NextResponse.json({
       success: true,
-      downloadUrl,
-      sha256Checksum,
-      fileSizeBytes,
-      fileName: originalName,
+      downloadUrl: result.downloadUrl,
+      sha256Checksum: result.sha256Checksum,
+      fileSizeBytes: result.fileSizeBytes,
+      fileName: result.fileName,
     });
   } catch (error: any) {
     if (error.message === "UNAUTHORIZED") {
