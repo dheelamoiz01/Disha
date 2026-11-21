@@ -1,0 +1,45 @@
+name: Cloudflare Workers Build Validation
+
+on:
+  push:
+    branches:
+      - cloudflare-migration
+  workflow_dispatch:
+
+jobs:
+  validate-cloudflare-build:
+    name: Build OpenNext on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build OpenNext for Cloudflare Workers
+        run: npm run build:cf
+
+      - name: Verify build artifacts
+        run: |
+          if [ ! -f .open-next/worker.js ]; then
+            echo "ERROR: .open-next/worker.js was not generated"
+            exit 1
+          fi
+          if [ ! -d .open-next/assets ]; then
+            echo "ERROR: .open-next/assets directory was not generated"
+            exit 1
+          fi
+          echo "SUCCESS: .open-next/worker.js and static assets verified on Linux."
+          ls -la .open-next/
