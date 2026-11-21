@@ -47,9 +47,11 @@ public/downloads/apk/*.apk
 
 backups/
 scripts/*
+!scripts/deploy_staging_schema.ts
 !scripts/seed_staging.ts
 !scripts/bootstrap_superadmin.ts
 !scripts/provision_user.ts
+*.db
 !scripts/apply_indexes.tsprisma
 
 .vercel
@@ -70,9 +72,11 @@ public/downloads/apk/*.apk
 
 backups/
 scripts/*
+!scripts/deploy_staging_schema.ts
 !scripts/seed_staging.ts
 !scripts/bootstrap_superadmin.ts
 !scripts/provision_user.ts
+*.db
 !scripts/apply_indexes.ts
 
 # cloudflare & opennext

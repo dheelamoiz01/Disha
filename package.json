@@ -8,7 +8,8 @@
     "build:cf": "prisma generate && opennextjs-cloudflare build",
     "preview:cf": "opennextjs-cloudflare build && wrangler dev",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:deploy:staging": "tsx scripts/deploy_staging_schema.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
