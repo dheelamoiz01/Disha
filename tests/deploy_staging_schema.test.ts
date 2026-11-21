@@ -22,29 +22,57 @@ describe("DISHA Staging Schema Deployment Suite", () => {
     }
   });
 
-  test("1. Production Database Protection: Rejects duokarma and disha-roan production targets", () => {
+  test("1. Production Database Safeguard: Explicitly rejects production database identities (disha-roan, duokarma)", () => {
     assert.throws(
-      () => validateStagingDatabaseUrl("libsql://duokarma-duokarma.turso.io"),
-      /Production database detected/
+      () => validateStagingDatabaseUrl("libsql://disha-roan-duokarma.aws-ap-south-1.turso.io"),
+      /Production database identity detected/
     );
     assert.throws(
-      () => validateStagingDatabaseUrl("libsql://disha-roan-prod.turso.io"),
-      /Production database detected/
+      () => validateStagingDatabaseUrl("libsql://duokarma-duokarma.turso.io"),
+      /Production database identity detected/
     );
   });
 
-  test("2. Target Identity Verification: Rejects missing or non-staging URLs", () => {
+  test("2. Valid Staging URL: Accepts disha-staging-duokarma even though organization is duokarma", () => {
+    assert.doesNotThrow(() =>
+      validateStagingDatabaseUrl("libsql://disha-staging-duokarma.aws-ap-south-1.turso.io")
+    );
+    assert.doesNotThrow(() =>
+      validateStagingDatabaseUrl("https://disha-staging-duokarma.turso.io")
+    );
+  });
+
+  test("3. Target Identity Verification: Rejects non-staging databases", () => {
+    assert.throws(
+      () => validateStagingDatabaseUrl("libsql://some-random-db-duokarma.turso.io"),
+      /Target database identity mismatch/
+    );
+    assert.throws(
+      () => validateStagingDatabaseUrl("libsql://other-db.turso.io"),
+      /Target database identity mismatch/
+    );
+  });
+
+  test("4. Malformed and Unsupported URLs: Rejects empty, invalid scheme, or malformed URLs", () => {
     assert.throws(
       () => validateStagingDatabaseUrl(""),
       /TURSO_DATABASE_URL environment variable is missing/
     );
     assert.throws(
-      () => validateStagingDatabaseUrl("libsql://some-random-db.turso.io"),
-      /Target database identity mismatch/
+      () => validateStagingDatabaseUrl("   "),
+      /TURSO_DATABASE_URL environment variable is empty/
     );
-    // Should not throw when targeting disha-staging
-    assert.doesNotThrow(() =>
-      validateStagingDatabaseUrl("libsql://disha-staging-test.turso.io")
+    assert.throws(
+      () => validateStagingDatabaseUrl("not-a-valid-url"),
+      /Malformed TURSO_DATABASE_URL/
+    );
+    assert.throws(
+      () => validateStagingDatabaseUrl("ftp://disha-staging-duokarma.turso.io"),
+      /Unsupported URL scheme/
+    );
+    assert.throws(
+      () => validateStagingDatabaseUrl("libsql://"),
+      /Missing hostname/
     );
   });
 

@@ -2,24 +2,15 @@ import crypto from "crypto";
 import { prisma } from "../src/lib/prisma";
 import { hashPassword } from "../src/lib/auth/password";
 import { UserRole } from "../generated/prisma/client";
+import { validateStagingDatabaseUrl } from "./deploy_staging_schema";
 
 async function seedStaging() {
-  const dbUrl = (process.env.TURSO_DATABASE_URL || "").trim().toLowerCase();
+  const dbUrl = process.env.TURSO_DATABASE_URL || "";
 
-  if (!dbUrl) {
-    console.error("FATAL ERROR: TURSO_DATABASE_URL environment variable is missing. Aborting.");
-    process.exit(1);
-  }
-
-  // 1. Explicitly reject known production databases
-  if (dbUrl.includes("duokarma") || dbUrl.includes("disha-roan")) {
-    console.error("FATAL ERROR: Production database URL detected. Refusing to execute seed on production.");
-    process.exit(1);
-  }
-
-  // 2. Strictly require the staging database identity (must be explicitly 'disha-staging')
-  if (!dbUrl.includes("disha-staging")) {
-    console.error("FATAL ERROR: Database identity mismatch. TURSO_DATABASE_URL must target 'disha-staging'. Aborting.");
+  try {
+    validateStagingDatabaseUrl(dbUrl);
+  } catch (err: any) {
+    console.error(err?.message || err);
     process.exit(1);
   }
 

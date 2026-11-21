@@ -16,21 +16,59 @@ export interface DeployResult {
  * Throws an error if URL points to production or does not match staging.
  */
 export function validateStagingDatabaseUrl(url: string): void {
-  const normalized = (url || "").trim().toLowerCase();
-
-  if (!normalized) {
+  if (!url || typeof url !== "string") {
     throw new Error("FATAL: TURSO_DATABASE_URL environment variable is missing.");
   }
 
-  // 1. Explicitly reject known production databases
-  if (normalized.includes("duokarma") || normalized.includes("disha-roan")) {
-    throw new Error("FATAL: Production database detected. Refusing to deploy schema to production.");
+  const trimmed = url.trim();
+  if (!trimmed) {
+    throw new Error("FATAL: TURSO_DATABASE_URL environment variable is empty.");
   }
 
-  // 2. Strictly require the staging database identity ('disha-staging')
-  if (!normalized.includes("disha-staging")) {
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`FATAL: Malformed TURSO_DATABASE_URL: "${trimmed}".`);
+  }
+
+  // 1. Validate scheme
+  const validSchemes = ["libsql:", "https:", "http:", "file:"];
+  if (!validSchemes.includes(parsed.protocol)) {
     throw new Error(
-      "FATAL: Target database identity mismatch. TURSO_DATABASE_URL must explicitly target 'disha-staging'."
+      `FATAL: Unsupported URL scheme "${parsed.protocol}". Expected libsql:, https:, or http:.`
+    );
+  }
+
+  // Support local test databases if using file: scheme
+  if (parsed.protocol === "file:") {
+    if (!parsed.pathname.toLowerCase().includes("disha-staging")) {
+      throw new Error("FATAL: File database target must include 'disha-staging'.");
+    }
+    return;
+  }
+
+  // 2. Validate hostname
+  const hostname = parsed.hostname.toLowerCase();
+  if (!hostname) {
+    throw new Error("FATAL: Missing hostname in TURSO_DATABASE_URL.");
+  }
+
+  // 3. Reject production database identities explicitly (e.g. disha-roan-*, duokarma-*)
+  if (
+    hostname.startsWith("disha-roan-") ||
+    hostname.startsWith("duokarma-") ||
+    hostname.includes("disha-roan")
+  ) {
+    throw new Error(
+      `FATAL: Production database identity detected ("${hostname}"). Refusing to connect to production.`
+    );
+  }
+
+  // 4. Validate that the hostname starts with the exact database identity 'disha-staging-'
+  if (!hostname.startsWith("disha-staging-")) {
+    throw new Error(
+      `FATAL: Target database identity mismatch ("${hostname}"). TURSO_DATABASE_URL hostname must start with "disha-staging-".`
     );
   }
 }
