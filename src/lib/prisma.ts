@@ -49,12 +49,64 @@ const resilientFetch = async (input: RequestInfo | URL, init?: RequestInit): Pro
   throw lastError;
 };
 
-const adapter = new PrismaLibSql({
-  url: process.env.TURSO_DATABASE_URL!,
-  authToken: process.env.TURSO_AUTH_TOKEN!,
-  fetch: resilientFetch,
-});
+/**
+ * Resolves database credentials dynamically from either process.env or Cloudflare Worker context.
+ */
+function getDatabaseConfig(): { url: string; authToken?: string } {
+  let url = process.env.TURSO_DATABASE_URL;
+  let authToken = process.env.TURSO_AUTH_TOKEN;
 
-export const prisma = new PrismaClient({
-  adapter,
+  if (!url) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getCloudflareContext } = require("@opennextjs/cloudflare");
+      const ctx = getCloudflareContext();
+      if (ctx?.env?.TURSO_DATABASE_URL) {
+        url = ctx.env.TURSO_DATABASE_URL;
+        authToken = ctx.env.TURSO_AUTH_TOKEN;
+      }
+    } catch {
+      // Ignored if not in Cloudflare Worker context
+    }
+  }
+
+  if (!url) {
+    throw new Error(
+      "TURSO_DATABASE_URL is not set. Ensure TURSO_DATABASE_URL is defined in .env or as a Cloudflare Worker secret."
+    );
+  }
+
+  return { url, authToken };
+}
+
+let _prismaInstance: PrismaClient | null = null;
+
+export function getPrisma(): PrismaClient {
+  if (!_prismaInstance) {
+    const { url, authToken } = getDatabaseConfig();
+    const adapter = new PrismaLibSql({
+      url,
+      authToken,
+      fetch: resilientFetch,
+    });
+    _prismaInstance = new PrismaClient({
+      adapter,
+    });
+  }
+  return _prismaInstance;
+}
+
+/**
+ * Lazy Prisma client proxy that defers initialization until first query,
+ * ensuring Cloudflare Worker environment variables and secrets are populated.
+ */
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const client = getPrisma();
+    const value = (client as any)[prop];
+    if (typeof value === "function") {
+      return value.bind(client);
+    }
+    return value;
+  },
 });

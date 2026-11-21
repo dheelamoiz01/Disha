@@ -17,7 +17,7 @@ const nextConfig: NextConfig = {
       script-src 'self' 'unsafe-eval' 'unsafe-inline';
       style-src 'self' 'unsafe-inline';
       img-src 'self' blob: data: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://server.arcgisonline.com https://*.arcgisonline.com https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://*.google.com https://*.googleapis.com https://*.gstatic.com https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com;
-      font-src 'self';
+      font-src 'self' data: https://fonts.gstatic.com;
       object-src 'none';
       base-uri 'self';
       form-action 'self';

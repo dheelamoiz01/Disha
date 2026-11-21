@@ -5,7 +5,6 @@ import { verifyPassword } from "@/lib/auth/password";
 import { createSession, setSessionCookie } from "@/lib/auth/session";
 import { logAudit } from "@/lib/auth/audit";
 
-
 import { checkRateLimit } from "@/lib/security/rate_limiter";
 import { validateOrigin } from "@/lib/security/csrf";
 
@@ -77,6 +76,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid request payload" }, { status: 400 });
     }
     console.error("Login error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const isStagingOrDev =
+      process.env.ENVIRONMENT === "staging" || process.env.NODE_ENV !== "production";
+    const message =
+      isStagingOrDev && error instanceof Error
+        ? `Internal server error: ${error.message}`
+        : "Internal server error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
