@@ -106,7 +106,7 @@ async function uploadToGitHubReleases(
     );
   }
 
-  // 3. Paginated Duplicate asset handling: If asset with the same name already exists, delete it first
+  // 3. Paginated Duplicate asset search: Check if an asset with the same name already exists
   const existingAsset = await findExistingAsset(
     owner,
     repo,
@@ -115,6 +115,10 @@ async function uploadToGitHubReleases(
     commonHeaders
   );
 
+  // 4. Upload APK binary asset to GitHub Releases FIRST (ensures previous asset is not deleted if upload fails)
+  const uploadUrl = `https://uploads.github.com/repos/${owner}/${repo}/releases/${releaseData.id}/assets?name=${encodeURIComponent(assetFileName)}`;
+  
+  // If an asset with the exact same name exists, delete it immediately before the new upload
   if (existingAsset?.id) {
     const deleteAssetRes = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/releases/assets/${existingAsset.id}`,
@@ -130,8 +134,6 @@ async function uploadToGitHubReleases(
     }
   }
 
-  // 4. Upload APK binary asset to GitHub Releases
-  const uploadUrl = `https://uploads.github.com/repos/${owner}/${repo}/releases/${releaseData.id}/assets?name=${encodeURIComponent(assetFileName)}`;
   const uploadRes = await fetch(uploadUrl, {
     method: "POST",
     headers: {

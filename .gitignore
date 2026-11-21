@@ -46,7 +46,11 @@ next-env.d.ts
 public/downloads/apk/*.apk
 
 backups/
-scripts/prisma
+scripts/*
+!scripts/seed_staging.ts
+!scripts/bootstrap_superadmin.ts
+!scripts/provision_user.ts
+!scripts/apply_indexes.tsprisma
 
 .vercel
 
@@ -65,7 +69,11 @@ generated/
 public/downloads/apk/*.apk
 
 backups/
-scripts/
+scripts/*
+!scripts/seed_staging.ts
+!scripts/bootstrap_superadmin.ts
+!scripts/provision_user.ts
+!scripts/apply_indexes.ts
 
 # cloudflare & opennext
 .open-next/
