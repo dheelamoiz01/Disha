@@ -16,9 +16,37 @@ export interface ApkStreamResult {
 }
 
 /**
+ * Scans paginated release assets to locate any existing duplicate asset by name.
+ */
+async function findExistingAsset(
+  owner: string,
+  repo: string,
+  releaseId: number,
+  assetName: string,
+  headers: Record<string, string>
+): Promise<{ id: number } | null> {
+  let page = 1;
+  const maxPages = 5; // Scan up to 500 assets across pages
+  while (page <= maxPages) {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/releases/${releaseId}/assets?per_page=100&page=${page}`,
+      { headers }
+    );
+    if (!res.ok) break;
+    const assets = await res.json();
+    if (!Array.isArray(assets) || assets.length === 0) break;
+    const match = assets.find((a: any) => a.name === assetName);
+    if (match?.id) return { id: match.id };
+    if (assets.length < 100) break;
+    page++;
+  }
+  return null;
+}
+
+/**
  * Uploads an APK binary directly to GitHub Releases via GitHub REST API.
  * Uses an authenticated server-side GITHUB_TOKEN secret.
- * Automatically creates the release tag if not present, and replaces duplicate assets.
+ * Automatically creates the release tag if not present, and handles duplicate asset replacement.
  */
 async function uploadToGitHubReleases(
   assetFileName: string,
@@ -78,24 +106,27 @@ async function uploadToGitHubReleases(
     );
   }
 
-  // 3. Duplicate asset handling: If asset with the same name already exists, delete it first
-  if (Array.isArray(releaseData.assets)) {
-    const existingAsset = releaseData.assets.find(
-      (a: any) => a.name === assetFileName
-    );
-    if (existingAsset?.id) {
-      const deleteAssetRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/releases/assets/${existingAsset.id}`,
-        {
-          method: "DELETE",
-          headers: commonHeaders,
-        }
-      );
-      if (!deleteAssetRes.ok && deleteAssetRes.status !== 404) {
-        console.warn(
-          `[ApkStorage] Warning: Failed to delete previous duplicate asset ${existingAsset.id}: ${deleteAssetRes.status}`
-        );
+  // 3. Paginated Duplicate asset handling: If asset with the same name already exists, delete it first
+  const existingAsset = await findExistingAsset(
+    owner,
+    repo,
+    releaseData.id,
+    assetFileName,
+    commonHeaders
+  );
+
+  if (existingAsset?.id) {
+    const deleteAssetRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/releases/assets/${existingAsset.id}`,
+      {
+        method: "DELETE",
+        headers: commonHeaders,
       }
+    );
+    if (!deleteAssetRes.ok && deleteAssetRes.status !== 404) {
+      console.warn(
+        `[ApkStorage] Warning: Failed to delete previous duplicate asset ${existingAsset.id}: ${deleteAssetRes.status}`
+      );
     }
   }
 
@@ -135,10 +166,15 @@ export async function saveApkFile(
   originalName: string,
   buffer: Buffer | Uint8Array
 ): Promise<ApkSaveResult> {
+  // Validate non-empty payload to prevent zero-byte corrupt uploads
+  if (!buffer || buffer.byteLength === 0) {
+    throw new Error("Cannot upload empty APK file (0 bytes).");
+  }
+
   const safeBaseName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const uniqueKey = `${Date.now()}_${safeBaseName}`;
 
-  // Calculate SHA-256 checksum
+  // Calculate SHA-256 checksum strictly from the uploaded bytes
   const sha256Checksum = crypto.createHash("sha256").update(buffer).digest("hex").toLowerCase();
   const fileSizeBytes = buffer.byteLength;
 
