@@ -14,8 +14,13 @@ crons = ["0 */6 * * *"]
 binding = "APK_BUCKET"
 bucket_name = "disha-apk-releases"
 
+# ==============================================================================
+# Domain Configuration Notice:
+# Real domains must be confirmed before production deployment or merging to master.
+# Existing production currently uses: https://disha-roan.vercel.app
+# ==============================================================================
 [vars]
-NEXT_PUBLIC_APP_URL = "https://disha.police.gov.in"
+NEXT_PUBLIC_APP_URL = "https://<CONFIRMED_PRODUCTION_DOMAIN>"
 ENVIRONMENT = "production"
 
 # ==============================================================================
@@ -27,14 +32,14 @@ name = "disha-staging"
 
 # Distinct staging runtime variables
 [env.staging.vars]
-NEXT_PUBLIC_APP_URL = "https://disha-staging.workers.dev"
+NEXT_PUBLIC_APP_URL = "https://<CONFIRMED_STAGING_SUBDOMAIN>.workers.dev"
 ENVIRONMENT = "staging"
 
 # Retention purge cron explicitly disabled in staging until verified
 [env.staging.triggers]
 crons = []
 
-# Separate staging R2 bucket binding
+# Separate staging R2 bucket binding (isolated from production R2)
 [[env.staging.r2_buckets]]
 binding = "APK_BUCKET"
 bucket_name = "disha-apk-releases-staging"

@@ -9,6 +9,7 @@ function generateSalt(): Uint8Array {
 /**
  * Sequential execution guard within the isolate to prevent concurrent 64 MB WASM
  * allocations from exceeding the 128 MB per-isolate Cloudflare memory limit.
+ * Catches prior rejections to prevent deadlock or cascading failures.
  */
 let isolateArgon2Lock = Promise.resolve();
 
@@ -20,7 +21,8 @@ async function runWithMemoryGuard<T>(fn: () => Promise<T>): Promise<T> {
   });
 
   try {
-    await previousLock;
+    // Wait for the previous lock to settle, catching any prior errors to avoid deadlocks
+    await previousLock.catch(() => {});
     return await fn();
   } finally {
     release!();
