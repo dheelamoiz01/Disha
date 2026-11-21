@@ -9,19 +9,18 @@ assets = { directory = ".open-next/assets", binding = "ASSETS" }
 [triggers]
 crons = ["0 */6 * * *"]
 
-# Production R2 bucket binding for APK releases
-[[r2_buckets]]
-binding = "APK_BUCKET"
-bucket_name = "disha-apk-releases"
-
 # ==============================================================================
-# Domain Configuration Notice:
+# Domain & Storage Configuration Notice:
 # Real domains must be confirmed before production deployment or merging to master.
 # Existing production currently uses: https://disha-roan.vercel.app
+# APK storage uses GitHub Releases (zero cost, unlimited CDN bandwidth, no credit card).
 # ==============================================================================
 [vars]
 NEXT_PUBLIC_APP_URL = "https://<CONFIRMED_PRODUCTION_DOMAIN>"
 ENVIRONMENT = "production"
+GITHUB_REPO_OWNER = "dheelamoiz01"
+GITHUB_REPO_NAME = "Disha"
+GITHUB_RELEASE_TAG = "app-releases"
 
 # ==============================================================================
 # Isolated Staging Environment
@@ -34,12 +33,10 @@ name = "disha-staging"
 [env.staging.vars]
 NEXT_PUBLIC_APP_URL = "https://<CONFIRMED_STAGING_SUBDOMAIN>.workers.dev"
 ENVIRONMENT = "staging"
+GITHUB_REPO_OWNER = "dheelamoiz01"
+GITHUB_REPO_NAME = "Disha"
+GITHUB_RELEASE_TAG = "app-releases-staging"
 
 # Retention purge cron explicitly disabled in staging until verified
 [env.staging.triggers]
 crons = []
-
-# Separate staging R2 bucket binding (isolated from production R2)
-[[env.staging.r2_buckets]]
-binding = "APK_BUCKET"
-bucket_name = "disha-apk-releases-staging"

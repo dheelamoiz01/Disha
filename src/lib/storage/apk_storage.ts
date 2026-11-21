@@ -16,36 +16,120 @@ export interface ApkStreamResult {
 }
 
 /**
- * Safely accesses the Cloudflare R2 bucket binding if running within the Cloudflare Workers runtime.
+ * Uploads an APK binary directly to GitHub Releases via GitHub REST API.
+ * Uses an authenticated server-side GITHUB_TOKEN secret.
+ * Automatically creates the release tag if not present, and replaces duplicate assets.
  */
-function getCloudflareR2Bucket(): any | null {
-  try {
-    // Dynamic access to avoid build-time failures outside of Cloudflare
-    const openNext = require("@opennextjs/cloudflare");
-    const ctx = openNext.getCloudflareContext?.();
-    if (ctx?.env?.APK_BUCKET) {
-      return ctx.env.APK_BUCKET;
+async function uploadToGitHubReleases(
+  assetFileName: string,
+  buffer: Buffer | Uint8Array,
+  token: string,
+  owner: string,
+  repo: string,
+  tag: string
+): Promise<string> {
+  const commonHeaders = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "DISHA-Storage-Service",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  // 1. Fetch existing release by tag
+  let releaseData: any = null;
+  const getReleaseRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`,
+    { headers: commonHeaders }
+  );
+
+  if (getReleaseRes.ok) {
+    releaseData = await getReleaseRes.json();
+  } else if (getReleaseRes.status === 404) {
+    // 2. Release does not exist yet — create it
+    const createReleaseRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/releases`,
+      {
+        method: "POST",
+        headers: {
+          ...commonHeaders,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          tag_name: tag,
+          name: `DISHA Android Releases (${tag})`,
+          body: "Automated rolling release for DISHA Android field tracker APK binaries.",
+          draft: false,
+          prerelease: false,
+        }),
+      }
+    );
+
+    if (!createReleaseRes.ok) {
+      const errText = await createReleaseRes.text();
+      throw new Error(
+        `Failed to create GitHub release tag '${tag}' (${createReleaseRes.status}): ${errText}`
+      );
     }
-  } catch {
-    // Running in standard Node.js or test environment
+    releaseData = await createReleaseRes.json();
+  } else {
+    const errText = await getReleaseRes.text();
+    throw new Error(
+      `Failed to query GitHub release tag '${tag}' (${getReleaseRes.status}): ${errText}`
+    );
   }
 
-  // Also check globalThis or process.env binding if directly attached
-  const g = globalThis as any;
-  if (g?.APK_BUCKET) {
-    return g.APK_BUCKET;
-  }
-  if (typeof process !== "undefined" && (process.env as any)?.APK_BUCKET) {
-    return (process.env as any).APK_BUCKET;
+  // 3. Duplicate asset handling: If asset with the same name already exists, delete it first
+  if (Array.isArray(releaseData.assets)) {
+    const existingAsset = releaseData.assets.find(
+      (a: any) => a.name === assetFileName
+    );
+    if (existingAsset?.id) {
+      const deleteAssetRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/releases/assets/${existingAsset.id}`,
+        {
+          method: "DELETE",
+          headers: commonHeaders,
+        }
+      );
+      if (!deleteAssetRes.ok && deleteAssetRes.status !== 404) {
+        console.warn(
+          `[ApkStorage] Warning: Failed to delete previous duplicate asset ${existingAsset.id}: ${deleteAssetRes.status}`
+        );
+      }
+    }
   }
 
-  return null;
+  // 4. Upload APK binary asset to GitHub Releases
+  const uploadUrl = `https://uploads.github.com/repos/${owner}/${repo}/releases/${releaseData.id}/assets?name=${encodeURIComponent(assetFileName)}`;
+  const uploadRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      ...commonHeaders,
+      "Content-Type": "application/vnd.android.package-archive",
+      "Content-Length": buffer.byteLength.toString(),
+    },
+    body: buffer as any,
+  });
+
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text();
+    throw new Error(
+      `GitHub Releases asset upload failed (${uploadRes.status}): ${errText}`
+    );
+  }
+
+  const assetData = await uploadRes.json();
+  if (!assetData?.browser_download_url) {
+    throw new Error("GitHub Releases asset upload succeeded but returned no browser_download_url.");
+  }
+
+  return assetData.browser_download_url;
 }
 
 /**
  * Saves an uploaded APK file.
- * Prioritizes Cloudflare R2 storage if available.
- * Falls back to local filesystem storage in Node.js / dev environments.
+ * In production/staging (Cloudflare Workers), uploads directly to GitHub Releases.
+ * In local test runners without GITHUB_TOKEN, falls back to local disk for offline testing.
  */
 export async function saveApkFile(
   originalName: string,
@@ -58,36 +142,45 @@ export async function saveApkFile(
   const sha256Checksum = crypto.createHash("sha256").update(buffer).digest("hex").toLowerCase();
   const fileSizeBytes = buffer.byteLength;
 
-  const r2Bucket = getCloudflareR2Bucket();
-  if (r2Bucket) {
-    // Store in Cloudflare R2 bucket
-    await r2Bucket.put(uniqueKey, buffer, {
-      httpMetadata: {
-        contentType: "application/vnd.android.package-archive",
-        cacheControl: "public, max-age=86400, immutable",
-      },
-      customMetadata: {
-        sha256: sha256Checksum,
-        originalName: safeBaseName,
-      },
-    });
+  const githubToken = process.env.GITHUB_TOKEN?.trim();
+  const owner = process.env.GITHUB_REPO_OWNER?.trim() || "dheelamoiz01";
+  const repo = process.env.GITHUB_REPO_NAME?.trim() || "Disha";
+  const tag = process.env.GITHUB_RELEASE_TAG?.trim() || "app-releases";
 
-    // If an external R2 public domain is configured, use it directly; otherwise use the app's download endpoint
-    const r2PublicUrl = process.env.R2_PUBLIC_URL?.replace(/\/$/, "");
-    const downloadUrl = r2PublicUrl
-      ? `${r2PublicUrl}/${uniqueKey}`
-      : `/api/app/release/download/${uniqueKey}`;
+  // If GITHUB_TOKEN is present, upload via GitHub Releases API
+  if (githubToken) {
+    const downloadUrl = await uploadToGitHubReleases(
+      safeBaseName,
+      buffer,
+      githubToken,
+      owner,
+      repo,
+      tag
+    );
 
     return {
       downloadUrl,
-      key: uniqueKey,
+      key: safeBaseName,
       sha256Checksum,
       fileSizeBytes,
       fileName: originalName,
     };
   }
 
-  // Fallback: Node.js filesystem (used in local development or standalone tests)
+  // If running in a Cloudflare Worker environment and GITHUB_TOKEN is missing, fail explicitly.
+  const isWorkerRuntime =
+    typeof process === "undefined" ||
+    process.env.ENVIRONMENT === "production" ||
+    process.env.ENVIRONMENT === "staging" ||
+    (typeof process.env.CF_PAGES !== "undefined");
+
+  if (isWorkerRuntime) {
+    throw new Error(
+      "APK Storage Error: GITHUB_TOKEN secret is not configured in Cloudflare Workers. Local filesystem fallback is disabled in serverless runtime."
+    );
+  }
+
+  // Safe Fallback: Only permitted in local Node.js test/development environments without GITHUB_TOKEN
   try {
     const fs = await import("fs");
     const path = await import("path");
@@ -105,34 +198,21 @@ export async function saveApkFile(
       fileName: originalName,
     };
   } catch (err: any) {
-    console.error("[ApkStorage] Failed to save APK to filesystem fallback:", err?.message);
-    throw new Error(
-      "Storage provider unavailable: Please configure Cloudflare R2 (APK_BUCKET) or ensure a writable filesystem is present."
-    );
+    throw new Error(`Failed to save APK in local development fallback: ${err?.message}`);
   }
 }
 
 /**
- * Retrieves an APK file as a web ReadableStream for download.
- * Checks Cloudflare R2 first, then local filesystem fallback.
+ * Retrieves an APK stream for download if stored locally.
+ * If downloadUrl is a full external URL (GitHub Releases CDN), the route issues a 302 redirect.
  */
 export async function getApkStream(keyOrPath: string): Promise<ApkStreamResult | null> {
-  // 1. Try Cloudflare R2
-  const r2Bucket = getCloudflareR2Bucket();
-  if (r2Bucket) {
-    const cleanKey = keyOrPath.replace(/^(\/downloads\/apk\/|\/api\/app\/release\/download\/)/, "");
-    const r2Object = await r2Bucket.get(cleanKey);
-    if (r2Object) {
-      return {
-        stream: r2Object.body,
-        size: r2Object.size,
-        sha256Checksum: r2Object.customMetadata?.sha256,
-        contentType: "application/vnd.android.package-archive",
-      };
-    }
+  // If external URL (GitHub Releases), caller should redirect
+  if (keyOrPath.startsWith("http://") || keyOrPath.startsWith("https://")) {
+    return null;
   }
 
-  // 2. Try Node.js filesystem fallback
+  // Local filesystem stream fallback (only in dev/tests)
   try {
     const fs = await import("fs");
     const path = await import("path");
@@ -144,7 +224,6 @@ export async function getApkStream(keyOrPath: string): Promise<ApkStreamResult |
       const stat = await fs.promises.stat(localFilePath);
       const fileStream = fs.createReadStream(localFilePath);
 
-      // Convert Node ReadStream to Web ReadableStream
       const webStream = new ReadableStream({
         start(controller) {
           fileStream.on("data", (chunk) => controller.enqueue(chunk));
