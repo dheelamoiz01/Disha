@@ -5,12 +5,36 @@ compatibility_flags = ["nodejs_compat"]
 
 assets = { directory = ".open-next/assets", binding = "ASSETS" }
 
-# Scheduled cron trigger matching DISHA's 6-hour retention policy
+# Production retention cron (every 6 hours)
 [triggers]
 crons = ["0 */6 * * *"]
 
-# Optional Cloudflare R2 bucket binding for APK releases
-# Bind your production R2 bucket by creating it via: wrangler r2 bucket create disha-apk-releases
-# [[r2_buckets]]
-# binding = "APK_BUCKET"
-# bucket_name = "disha-apk-releases"
+# Production R2 bucket binding for APK releases
+[[r2_buckets]]
+binding = "APK_BUCKET"
+bucket_name = "disha-apk-releases"
+
+[vars]
+NEXT_PUBLIC_APP_URL = "https://disha.police.gov.in"
+ENVIRONMENT = "production"
+
+# ==============================================================================
+# Isolated Staging Environment
+# Deploy via: npx wrangler deploy --env staging
+# ==============================================================================
+[env.staging]
+name = "disha-staging"
+
+# Distinct staging runtime variables
+[env.staging.vars]
+NEXT_PUBLIC_APP_URL = "https://disha-staging.workers.dev"
+ENVIRONMENT = "staging"
+
+# Retention purge cron explicitly disabled in staging until verified
+[env.staging.triggers]
+crons = []
+
+# Separate staging R2 bucket binding
+[[env.staging.r2_buckets]]
+binding = "APK_BUCKET"
+bucket_name = "disha-apk-releases-staging"

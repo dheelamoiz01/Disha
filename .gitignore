@@ -70,3 +70,4 @@ scripts/
 # cloudflare & opennext
 .open-next/
 .wrangler/
+worker-configuration.d.ts
